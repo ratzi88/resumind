@@ -1,0 +1,22 @@
+# ── CV parsing ────────────────────────────────────────────────────────────────
+pypdf
+python-docx
+pdfplumber
+
+# ── LLM / AI ─────────────────────────────────────────────────────────────────
+openai          # used as OpenAI-compatible client for local Ollama + remote fallback
+python-dotenv
+
+# ── recommendation engine ────────────────────────────────────────────────────
+sentence-transformers
+scikit-learn
+pandas
+numpy
+
+# ── web scraping (optional) ──────────────────────────────────────────────────
+beautifulsoup4
+requests
+
+# ── OCR fallback (optional, needs tesseract binary) ─────────────────────────
+# pdf2image
+# pytesseract
