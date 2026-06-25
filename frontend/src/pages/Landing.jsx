@@ -1,4 +1,10 @@
 import { Link } from 'react-router-dom'
+import { useAuth } from '../lib/AuthContext.jsx'
+
+function AuthLink({ to, children, className }) {
+  const { token } = useAuth()
+  return <Link to={token ? to : '/login'} className={className}>{children}</Link>
+}
 
 export default function Landing() {
   return (
@@ -36,13 +42,13 @@ function Hero() {
             one place, powered by local AI.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Link to="/resume" className="btn-primary">
+            <AuthLink to="/resume" className="btn-primary">
               Upload your CV
               <Arrow />
-            </Link>
-            <Link to="/jobs" className="btn-ghost">
+            </AuthLink>
+            <AuthLink to="/jobs" className="btn-ghost">
               Explore matched jobs
-            </Link>
+            </AuthLink>
           </div>
           <div className="mt-10 flex flex-wrap gap-2">
             <span className="chip">Qwen 3.5 80b</span>
@@ -153,7 +159,7 @@ function Flows() {
         </div>
         <div className="mt-12 grid md:grid-cols-3 gap-6">
           {flows.map((f) => (
-            <Link
+            <AuthLink
               to={f.to}
               key={f.step}
               className="card group hover:border-brand-400/40 hover:shadow-glow transition-all"
@@ -169,7 +175,7 @@ function Flows() {
               <p className="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-brand-500 dark:text-brand-300 group-hover:text-brand-400">
                 {f.cta} <Arrow />
               </p>
-            </Link>
+            </AuthLink>
           ))}
         </div>
       </div>
@@ -253,11 +259,10 @@ function CTA() {
           <h2 className="section-title">Ready to find roles that match the real you?</h2>
           <p className="section-sub mx-auto">Upload a CV in seconds. ResuMind handles the rest.</p>
           <div className="mt-6 flex items-center justify-center gap-3">
-            <Link to="/resume" className="btn-primary">
+            <AuthLink to="/resume" className="btn-primary">
               Start now
               <Arrow />
-            </Link>
-            <a href="#" className="btn-ghost">Watch demo</a>
+            </AuthLink>
           </div>
         </div>
       </div>

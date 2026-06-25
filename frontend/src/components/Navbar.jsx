@@ -1,15 +1,23 @@
-import { NavLink, Link } from 'react-router-dom'
+import { NavLink, Link, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useTheme } from '../theme.jsx'
+import { useAuth } from '../lib/AuthContext.jsx'
 
 const links = [
   { to: '/resume', label: 'Resume' },
-  { to: '/jobs', label: 'Jobs' },
-  { to: '/roadmap', label: 'Roadmap' },
+  { to: '/jobs',   label: 'Jobs' },
+  { to: '/roadmap',label: 'Roadmap' },
 ]
 
 export default function Navbar() {
   const [open, setOpen] = useState(false)
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+
+  const handleLogout = () => {
+    logout()
+    navigate('/login', { replace: true })
+  }
 
   return (
     <header className="sticky top-0 z-40 backdrop-blur-md bg-bg/80 border-b border-line">
@@ -21,29 +29,40 @@ export default function Navbar() {
           </span>
         </Link>
 
-        <div className="hidden md:flex items-center gap-1">
-          {links.map((l) => (
-            <NavLink
-              key={l.to}
-              to={l.to}
-              className={({ isActive }) =>
-                `px-4 py-2 rounded-lg text-sm font-medium transition ${
-                  isActive
-                    ? 'bg-surface-2 text-fg'
-                    : 'text-muted hover:text-fg hover:bg-surface-2/60'
-                }`
-              }
-            >
-              {l.label}
-            </NavLink>
-          ))}
-        </div>
+        {user && (
+          <div className="hidden md:flex items-center gap-1">
+            {links.map((l) => (
+              <NavLink
+                key={l.to}
+                to={l.to}
+                className={({ isActive }) =>
+                  `px-4 py-2 rounded-lg text-sm font-medium transition ${
+                    isActive
+                      ? 'bg-surface-2 text-fg'
+                      : 'text-muted hover:text-fg hover:bg-surface-2/60'
+                  }`
+                }
+              >
+                {l.label}
+              </NavLink>
+            ))}
+          </div>
+        )}
 
         <div className="hidden md:flex items-center gap-2">
           <ThemeToggle />
-          <Link to="/resume" className="btn-primary">
-            Get Started
-          </Link>
+          {user ? (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted max-w-[140px] truncate">{user.email}</span>
+              <button onClick={handleLogout} className="btn-ghost text-sm px-3 py-1.5">
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <Link to="/login" className="btn-primary">
+              Sign in
+            </Link>
+          )}
         </div>
 
         <div className="md:hidden flex items-center gap-2">
@@ -71,7 +90,7 @@ export default function Navbar() {
       {open && (
         <div className="md:hidden border-t border-line bg-bg/95">
           <div className="px-4 py-3 flex flex-col gap-1">
-            {links.map((l) => (
+            {user && links.map((l) => (
               <NavLink
                 key={l.to}
                 to={l.to}
@@ -85,9 +104,21 @@ export default function Navbar() {
                 {l.label}
               </NavLink>
             ))}
-            <Link to="/resume" onClick={() => setOpen(false)} className="btn-primary mt-2">
-              Get Started
-            </Link>
+            {user ? (
+              <>
+                <p className="px-3 py-2 text-xs text-muted truncate">{user.email}</p>
+                <button
+                  onClick={() => { handleLogout(); setOpen(false) }}
+                  className="btn-ghost mt-1 text-left"
+                >
+                  Sign out
+                </button>
+              </>
+            ) : (
+              <Link to="/login" onClick={() => setOpen(false)} className="btn-primary mt-2 text-center">
+                Sign in
+              </Link>
+            )}
           </div>
         </div>
       )}
