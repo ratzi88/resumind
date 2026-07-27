@@ -67,6 +67,7 @@ def extract_text(file: UploadFile) -> str:
 # ── Flow 1 — resume suggestions ───────────────────────────────────────────────
 
 SUGGEST_PROMPT = """\
+/no_think
 You are an expert tech-industry career coach. Analyse the resume below for the target role and respond ONLY in this exact format — no extra text before or after:
 
 OVERALL: <one concise sentence verdict>
