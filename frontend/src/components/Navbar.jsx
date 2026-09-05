@@ -1,5 +1,5 @@
 import { NavLink, Link, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTheme } from '../theme.jsx'
 import { useAuth } from '../lib/AuthContext.jsx'
 
@@ -11,12 +11,38 @@ const links = [
 
 export default function Navbar() {
   const [open, setOpen] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
+  const accountRef = useRef(null)
   const { user, logout } = useAuth()
   const navigate = useNavigate()
 
+  useEffect(() => {
+    if (!accountOpen) return
+
+    const closeOnOutsideClick = (event) => {
+      if (!accountRef.current?.contains(event.target)) setAccountOpen(false)
+    }
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setAccountOpen(false)
+    }
+
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [accountOpen])
+
   const handleLogout = () => {
+    setAccountOpen(false)
     logout()
     navigate('/login', { replace: true })
+  }
+
+  const restartOnboarding = () => {
+    setAccountOpen(false)
+    navigate('/onboarding')
   }
 
   return (
@@ -52,11 +78,53 @@ export default function Navbar() {
         <div className="hidden md:flex items-center gap-2">
           <ThemeToggle />
           {user ? (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted max-w-[140px] truncate">{user.email}</span>
-              <button onClick={handleLogout} className="btn-ghost text-sm px-3 py-1.5">
-                Sign out
+            <div ref={accountRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setAccountOpen((value) => !value)}
+                aria-haspopup="menu"
+                aria-expanded={accountOpen}
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted hover:text-fg hover:bg-surface-2/60 transition"
+              >
+                <span className="max-w-[180px] truncate">{user.email}</span>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  className={`transition-transform ${accountOpen ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
               </button>
+
+              {accountOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full mt-2 w-56 overflow-hidden rounded-xl border border-line bg-bg shadow-xl"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={restartOnboarding}
+                    className="w-full px-4 py-3 text-left text-sm text-fg hover:bg-surface-2 transition"
+                  >
+                    Upload a new resume
+                  </button>
+                  <div className="border-t border-line" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={handleLogout}
+                    className="w-full px-4 py-3 text-left text-sm text-muted hover:text-fg hover:bg-surface-2 transition"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <Link to="/login" className="btn-primary">
@@ -107,6 +175,13 @@ export default function Navbar() {
             {user ? (
               <>
                 <p className="px-3 py-2 text-xs text-muted truncate">{user.email}</p>
+                <Link
+                  to="/onboarding"
+                  onClick={() => setOpen(false)}
+                  className="px-3 py-2 rounded-lg text-sm font-medium text-muted hover:text-fg hover:bg-surface-2/60"
+                >
+                  Upload a new resume
+                </Link>
                 <button
                   onClick={() => { handleLogout(); setOpen(false) }}
                   className="btn-ghost mt-1 text-left"
