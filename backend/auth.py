@@ -1,10 +1,13 @@
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+from dotenv import load_dotenv
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+load_dotenv()
 
 SECRET_KEY = os.getenv("JWT_SECRET", "resumind-secret-change-in-production")
 ALGORITHM  = "HS256"

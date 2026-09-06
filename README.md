@@ -2,9 +2,9 @@
 
 > Smart Resumes. Smarter Careers.
 
-AI-powered career platform that matches your CV to real jobs, explains the gaps, and builds a personalised roadmap — all processed locally, no cloud required.
+AI-powered career platform that matches your CV to real jobs, explains the gaps, and builds a personalised roadmap — designed for local-first deployment.
 
-**Authors:** Gal Ratzon, Noa Negri, Aviya Omisi — Final Project, Bar-Ilan University
+**Authors:** Gal Ratzon, Noa Negri, Avia Omesi — Final Project, Bar-Ilan University
 
 ---
 
@@ -15,17 +15,21 @@ ResuMind/
 ├── backend/                    Python backend
 │   ├── recommendation/         Sentence-BERT job matching engine
 │   │   └── recommendation.py
-│   ├── llm.py                  LLM integration (Qwen via Ollama)
+│   ├── llm.py                  LLM integration (Qwen via Ollama/llama.cpp)
 │   ├── scraper.py              PDF / DOCX text extraction
+│   ├── schema.sql              PostgreSQL + PGVector schema
+│   ├── tests/                  deterministic matching tests
 │   └── requirements.txt
 ├── frontend/                   React + Vite + Tailwind UI
 │   ├── src/
 │   │   ├── pages/              Landing, Resume (Flow 1), Jobs (Flow 2), Roadmap (Flow 3)
 │   │   ├── components/         Navbar, Footer
-│   │   ├── lib/                yaml.js, generatePdf.js
+│   │   ├── lib/                auth, CV state, YAML, PDF generation
 │   │   └── theme.jsx           Light / dark theme context
 │   ├── index.html
 │   └── package.json
+├── Dockerfile                  Production frontend + backend image
+├── .dockerignore               Excludes secrets, caches, and local datasets
 └── README.md
 ```
 
@@ -35,9 +39,9 @@ ResuMind/
 
 | Flow | Description |
 |------|-------------|
-| **1 – Resume** | Upload a PDF/DOCX **or** build one via a 6-step form → YAML → PDF |
-| **2 – Jobs** | Semantic vector matching (Sentence-BERT + PGVector) returns jobs ≥ 80% similarity with contrastive explanations |
-| **3 – Roadmap** | Interactive skill tree — check off acquired skills to update your CV and re-rank jobs automatically |
+| **1 – Resume** | Upload a PDF/DOCX **or** build one via a 6-step form → YAML → PDF; generated resumes can be saved to the profile |
+| **2 – Jobs** | Searchable semantic matching with skill coverage, CV evidence, salary, remote, work-type, and experience filters |
+| **3 – Roadmap** | Role roadmap plus selected-job gap analysis; acquired skills influence future job matching |
 
 ---
 
@@ -47,11 +51,11 @@ ResuMind/
 |-------|------|
 | Frontend | React 18, Vite, Tailwind CSS, React Router |
 | PDF generation | jsPDF (browser-side) |
-| Backend | Python, Flask (API layer — WIP) |
+| Backend | Python, FastAPI, Uvicorn |
 | CV parsing | pypdf, python-docx, pytesseract (OCR fallback) |
 | Embeddings | Sentence-BERT `all-MiniLM-L6-v2` (384-dim) |
-| Vector DB | PostgreSQL + PGVector (Supabase) |
-| LLM | Qwen 3.5 80b via Ollama (local, CPU-only on Proxmox) |
+| Vector DB | PostgreSQL + PGVector |
+| LLM | Qwen through a local OpenAI-compatible llama.cpp/Ollama endpoint |
 | Infra | Proxmox VM, Docker containers, local storage |
 
 ---
@@ -73,19 +77,19 @@ cd backend
 python -m venv venv
 venv\Scripts\activate        # Windows
 pip install -r requirements.txt
+# Run once against PostgreSQL/PGVector:
+psql "$DATABASE_URL" -f schema.sql
 ```
 
 **Environment variables** — create `backend/.env`:
 
 ```env
-# Local Ollama (Qwen 3.5 80b)
+# Local OpenAI-compatible inference endpoint
 OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_MODEL=qwen2.5:72b
 OLLAMA_API_KEY=ollama
 
-# Supabase / PostgreSQL
-SUPABASE_URL=http://localhost:54321
-SUPABASE_KEY=your-service-role-key
+# PostgreSQL + PGVector
 DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
 ```
 
@@ -103,6 +107,25 @@ cd backend
 python llm.py path/to/resume.pdf "Backend Engineer"
 ```
 
+### Docker image
+
+The production image builds the React frontend, bundles the Sentence-BERT model, and serves both the SPA and FastAPI from port `8000`.
+
+```bash
+docker build -t resumind:local .
+
+docker run --rm --name resumind \
+  -p 8000:8000 \
+  --add-host=host.docker.internal:host-gateway \
+  -e DATABASE_URL=postgresql://postgres:password@host.docker.internal:5432/postgres \
+  -e OLLAMA_BASE_URL=http://host.docker.internal:11434/v1 \
+  -e OLLAMA_MODEL=qwen2.5:72b \
+  -e JWT_SECRET=replace-with-a-long-random-secret \
+  resumind:local
+```
+
+Open `http://localhost:8000`; API documentation remains available at `http://localhost:8000/docs`. PostgreSQL/PGVector and the OpenAI-compatible LLM endpoint run outside this image. Run `backend/schema.sql` and the ingestion scripts against the configured database before testing roadmap and job data.
+
 ---
 
 ## Architecture
@@ -112,24 +135,32 @@ User → Frontend (React)
          │
          ├─ Flow 1: PDF upload / Form → YAML → PDF (browser-side jsPDF)
          │
-         ├─ Flow 2: CV embeddings ──► PGVector search ──► Top jobs (≥80%)
-         │                                                      │
-         │                                               Contrastive explanation
-         │                                               (LLM via Ollama)
+         ├─ Flow 2: CV + acquired skills ──► PGVector search ──► Filterable jobs
+         │                                                        │
+         │                                             Skill coverage + CV evidence
          │
          └─ Flow 3: Gap analysis ──► Roadmap JSON ──► Interactive skill tree
                                         │
                                   Mark skill acquired
                                         │
-                                 CV updated + jobs re-ranked
+                                 Career profile re-embedded + jobs re-ranked
 ```
 
 ---
 
 ## Key design decisions
 
-- **80% match threshold** — empirically set to eliminate false positives that appear at 70%
+- **Explainable fit score** — combines 75% semantic similarity with 25% explicit skill coverage; it is an estimate, not a probability
 - **Sentence-BERT over keyword matching** — handles synonyms ("JS" ↔ "JavaScript", "Full Stack" ↔ "Web Developer")
-- **Local-only storage** — CV files and personal data never leave the machine (Privacy by Design)
-- **English-only UI** — avoids Hebrew grammatical gender bias in embeddings
-- **CPU inference** — Qwen 3.5 80b runs on 256 GB RAM / 12-core Proxmox host without GPU; ~4–5 min/request
+- **Local-first storage** — uploaded files are temporary, contact PII is redacted before AI analysis, and extracted profile data stays in the configured database
+- **Job-specific roadmap context** — opening a roadmap from a job preserves that job's requirements and missing skills
+- **Enriched job ingestion** — salary, benefits, industries, company size, employee counts, and posting dates are available for filtering and display
+
+## Tests and verification
+
+```bash
+cd frontend && npm run build
+cd ../backend && python -m unittest discover -s tests -v
+```
+
+The matching helper tests cover aliases, required-skill parsing, evidence, bounded scoring, and contact-PII redaction. The full end-to-end flow still requires a configured PostgreSQL/PGVector database and inference endpoint.

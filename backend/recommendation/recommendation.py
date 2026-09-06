@@ -25,7 +25,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # ── config ────────────────────────────────────────────────────────────────────
 MODEL_NAME      = "all-MiniLM-L6-v2"   # 384-dim, fast, good semantic quality
-MATCH_THRESHOLD = 0.80                  # only return jobs >= 80% similarity
+MATCH_THRESHOLD = 0.60                  # practical semantic-similarity floor
 DEFAULT_TOP_N   = 10
 
 # Columns to drop (non-semantic metadata)
@@ -109,6 +109,8 @@ def recommend_jobs_by_pdf(
 
     results = job_df.iloc[top_idx].copy()
     results["semantic_score"] = scores[top_idx]
+    # This local CSV mode exposes raw semantic similarity. The API mode adds
+    # explicit skill coverage and labels its result as an estimated fit score.
     results["match_pct"] = (results["semantic_score"] * 100).round(1)
 
     return results.reset_index(drop=True)

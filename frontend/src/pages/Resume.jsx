@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from './shared.jsx'
 import { toYaml } from '../lib/yaml.js'
 import { useAuth } from '../lib/AuthContext.jsx'
@@ -13,7 +13,7 @@ export default function Resume() {
       <PageHeader
         eyebrow="Resume"
         title="Your CV"
-        subtitle="Analyse your saved resume against any role, or build a new CV from scratch."
+        subtitle="Improve your CV for a roadmap role or fit it to a specific job posting."
       />
 
       <div className="mt-8 inline-flex p-1 rounded-xl bg-surface-2/60 border border-line">
@@ -47,142 +47,229 @@ function TabBtn({ active, children, onClick }) {
 
 function AnalyseView() {
   const { token, user } = useAuth()
-  const [jobTitle,     setJobTitle]     = useState('')
-  const [suggestions,  setSuggestions]  = useState(null)
-  const [loading,      setLoading]      = useState(false)
-  const [error,        setError]        = useState(null)
-  const [showUpload,   setShowUpload]   = useState(false)
-  const [uploadFile,   setUploadFile]   = useState(null)
+  const [searchParams] = useSearchParams()
+  const [roles, setRoles] = useState([])
+  const [jobs, setJobs] = useState([])
+  const [selectedRole, setSelectedRole] = useState('')
+  const [selectedJobId, setSelectedJobId] = useState(() => searchParams.get('job_id') || '')
+  const [roleSuggestions, setRoleSuggestions] = useState(null)
+  const [jobSuggestions, setJobSuggestions] = useState(null)
+  const [roleLoading, setRoleLoading] = useState(false)
+  const [jobLoading, setJobLoading] = useState(false)
+  const [roleError, setRoleError] = useState(null)
+  const [jobError, setJobError] = useState(null)
+  const [jobsLoading, setJobsLoading] = useState(false)
+  const [jobsLoadError, setJobsLoadError] = useState(null)
+  const [showUpload, setShowUpload] = useState(false)
+  const [uploadFile, setUploadFile] = useState(null)
 
   const filename = user?.resume_filename
+  const useUploadedResume = Boolean(uploadFile && (showUpload || !filename))
+  const hasResume = useUploadedResume || Boolean(filename && !showUpload)
+  const jobIdFromUrl = searchParams.get('job_id') || ''
+  const jobTitleFromUrl = searchParams.get('job_title') || ''
+  const companyFromUrl = searchParams.get('company') || ''
+  const contextJob = useMemo(() => jobIdFromUrl ? {
+    job_id: jobIdFromUrl,
+    title: jobTitleFromUrl || 'Selected job',
+    company: companyFromUrl,
+  } : null, [companyFromUrl, jobIdFromUrl, jobTitleFromUrl])
 
-  const analyse = async () => {
-    if (!jobTitle.trim()) return
-    setLoading(true)
-    setSuggestions(null)
-    setError(null)
-    try {
-      let res
-      if (showUpload && uploadFile) {
-        const body = new FormData()
-        body.append('file', uploadFile)
-        body.append('job_title', jobTitle.trim())
-        res = await fetch('/api/suggest', { method: 'POST', body })
-      } else {
-        const body = new URLSearchParams({ job_title: jobTitle.trim() })
-        res = await fetch('/api/user/suggest', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body,
-        })
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch('/api/roles', { signal: controller.signal })
+      .then(async (res) => {
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.detail || 'Could not load roadmap roles.')
+        setRoles(data.roles || [])
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') setRoleError(err.message)
+      })
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    if (selectedRole || roles.length === 0) return
+    const preferred = roles.find(role => role.slug === user?.desired_role) || roles[0]
+    if (preferred?.label) setSelectedRole(preferred.label)
+  }, [roles, selectedRole, user?.desired_role])
+
+  useEffect(() => {
+    if (!token || !filename) {
+      setJobs([])
+      setJobsLoading(false)
+      return undefined
+    }
+
+    const controller = new AbortController()
+    setJobsLoading(true)
+    setJobsLoadError(null)
+    fetch('/api/user/jobs?page=1&limit=50&sort=score', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.detail || 'Could not load matched jobs.')
+        const loadedJobs = data.jobs || []
+        const selectedIsLoaded = contextJob && loadedJobs.some(job => String(job.job_id) === String(contextJob.job_id))
+        const jobsWithContext = contextJob && !selectedIsLoaded
+          ? [contextJob, ...loadedJobs]
+          : loadedJobs
+        setJobs(jobsWithContext)
+        setSelectedJobId(current => current || String(jobsWithContext[0]?.job_id || ''))
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          setJobs([])
+          setJobsLoadError(err.message)
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setJobsLoading(false)
+      })
+
+    return () => controller.abort()
+  }, [contextJob, filename, token])
+
+  const selectableJobs = contextJob && !jobs.some(job => String(job.job_id) === String(contextJob.job_id))
+    ? [contextJob, ...jobs]
+    : jobs
+  const selectedJob = selectableJobs.find(job => String(job.job_id) === selectedJobId) || null
+
+  const requestSuggestions = async ({ jobTitle = '', jobId = '' }) => {
+    let res
+    if (useUploadedResume) {
+      const body = new FormData()
+      body.append('file', uploadFile)
+      if (jobTitle) body.append('job_title', jobTitle)
+      if (jobId) body.append('job_id', jobId)
+      res = await fetch('/api/suggest', { method: 'POST', body })
+    } else {
+      const body = new URLSearchParams()
+      if (jobTitle) body.set('job_title', jobTitle)
+      if (jobId) body.set('job_id', jobId)
+      res = await fetch('/api/user/suggest', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      })
+    }
+    const contentType = res.headers.get('content-type') || ''
+    const responseText = await res.text()
+    let data = null
+    if (contentType.includes('application/json')) {
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        throw new Error('The server returned an invalid response. Please try again.')
       }
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Server error')
-      setSuggestions(data)
+    }
+    if (!res.ok) {
+      throw new Error(data?.detail || `The AI request failed (${res.status}). Please try again.`)
+    }
+    if (!data) {
+      throw new Error('The AI server returned an unexpected response. Please try again.')
+    }
+    return data
+  }
+
+  const analyseRole = async () => {
+    if (!selectedRole || !hasResume) return
+    setRoleLoading(true)
+    setRoleSuggestions(null)
+    setRoleError(null)
+    try {
+      setRoleSuggestions(await requestSuggestions({ jobTitle: selectedRole }))
     } catch (err) {
-      setError(err.message)
+      setRoleError(err.message)
     } finally {
-      setLoading(false)
+      setRoleLoading(false)
+    }
+  }
+
+  const analyseJob = async () => {
+    if (!selectedJobId || !hasResume) return
+    setJobLoading(true)
+    setJobSuggestions(null)
+    setJobError(null)
+    try {
+      setJobSuggestions(await requestSuggestions({
+        jobTitle: selectedJob?.title || '',
+        jobId: selectedJobId,
+      }))
+    } catch (err) {
+      setJobError(err.message)
+    } finally {
+      setJobLoading(false)
     }
   }
 
   return (
-    <div className="mt-8 grid lg:grid-cols-3 gap-6">
-      <div className="lg:col-span-2 space-y-5">
-
-        {/* Stored resume banner */}
-        {filename && !showUpload && (
-          <div className="card flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="shrink-0 h-10 w-10 grid place-items-center rounded-xl bg-brand-500/15 border border-brand-400/20 text-brand-400">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M6 4h9l3 3v13H6z" strokeLinejoin="round" />
-                  <path d="M9 12h6M9 16h4" />
-                </svg>
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs text-muted uppercase tracking-wider">Saved resume</p>
-                <p className="text-sm font-medium text-fg truncate">{filename}</p>
-              </div>
+    <div className="mt-8 space-y-6">
+      {filename && !showUpload && (
+        <div className="card flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="shrink-0 h-10 w-10 grid place-items-center rounded-xl bg-brand-500/15 border border-brand-400/20 text-brand-400">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 4h9l3 3v13H6z" strokeLinejoin="round" />
+                <path d="M9 12h6M9 16h4" />
+              </svg>
             </div>
-            <button
-              onClick={() => setShowUpload(true)}
-              className="btn-ghost text-xs shrink-0"
-            >
-              Use a different file
-            </button>
-          </div>
-        )}
-
-        {/* Upload area (shown when no stored resume or user clicked "different file") */}
-        {(!filename || showUpload) && (
-          <UploadArea
-            file={uploadFile}
-            onFile={setUploadFile}
-            onCancel={filename ? () => { setShowUpload(false); setUploadFile(null) } : null}
-          />
-        )}
-
-        {/* AI suggestions */}
-        {(filename || uploadFile) && (
-          <div className="card space-y-5">
-            <div>
-              <p className="chip">AI resume coach</p>
-              <h3 className="mt-3 text-lg font-semibold text-fg">Get improvement suggestions</h3>
-              <p className="mt-1 text-sm text-muted">Enter the role you're targeting and we'll analyse your CV against it.</p>
-              <div className="mt-4 flex gap-2">
-                <input
-                  className="input flex-1"
-                  placeholder="e.g. Senior Backend Engineer"
-                  value={jobTitle}
-                  onChange={(e) => setJobTitle(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && analyse()}
-                />
-                <button
-                  onClick={analyse}
-                  disabled={loading || !jobTitle.trim()}
-                  className="btn-primary disabled:opacity-60 whitespace-nowrap"
-                >
-                  {loading ? 'Analysing…' : 'Analyse CV'}
-                </button>
-              </div>
-            </div>
-
-            {error && (
-              <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-                {error}
-              </div>
-            )}
-
-            {loading && (
-              <div className="flex items-center gap-3 text-sm text-muted">
-                <span className="h-4 w-4 rounded-full border-2 border-brand-400 border-t-transparent animate-spin" />
-                Analysing your CV — this takes 30–60 seconds…
-              </div>
-            )}
-
-            {suggestions && <SuggestionsPanel data={suggestions} />}
-
-            <div className="pt-2 border-t border-line">
-              <Link to="/jobs" className="btn-primary w-full justify-center">
-                View matching jobs →
-              </Link>
+            <div className="min-w-0">
+              <p className="text-xs text-muted uppercase tracking-wider">Saved resume</p>
+              <p className="text-sm font-medium text-fg truncate">{filename}</p>
             </div>
           </div>
-        )}
+          <button onClick={() => { setShowUpload(true); setRoleSuggestions(null); setJobSuggestions(null) }} className="btn-ghost text-xs shrink-0">
+            Use a different file
+          </button>
+        </div>
+      )}
 
-        {!filename && !uploadFile && (
-          <div className="card text-center py-8 text-muted text-sm">
-            No saved resume yet.{' '}
-            <Link to="/onboarding" className="text-brand-400 hover:underline">
-              Complete onboarding
-            </Link>{' '}
-            to upload your CV.
-          </div>
-        )}
+      {(!filename || showUpload) && (
+        <UploadArea
+          file={uploadFile}
+          onFile={(file) => { setUploadFile(file); setRoleSuggestions(null); setJobSuggestions(null) }}
+          onCancel={filename ? () => { setShowUpload(false); setUploadFile(null) } : null}
+        />
+      )}
+
+      {!hasResume && (
+        <div className="card text-center py-6 text-muted text-sm">
+          Choose a resume above, or{' '}
+          <Link to="/onboarding" className="text-brand-400 hover:underline">complete onboarding</Link>.
+        </div>
+      )}
+
+      <div className="grid lg:grid-cols-2 gap-6 items-start">
+        <RoleCoachCard
+          roles={roles}
+          selectedRole={selectedRole}
+          onSelect={(role) => { setSelectedRole(role); setRoleSuggestions(null); setRoleError(null) }}
+          onAnalyse={analyseRole}
+          suggestions={roleSuggestions}
+          loading={roleLoading}
+          error={roleError}
+          disabled={!hasResume}
+        />
+
+        <JobCoachCard
+          jobs={selectableJobs}
+          selectedJob={selectedJob}
+          selectedJobId={selectedJobId}
+          onSelect={(jobId) => { setSelectedJobId(jobId); setJobSuggestions(null); setJobError(null) }}
+          onAnalyse={analyseJob}
+          suggestions={jobSuggestions}
+          loading={jobLoading}
+          jobsLoading={jobsLoading}
+          error={jobError || jobsLoadError}
+          disabled={!hasResume}
+        />
       </div>
 
       <AnalyseSidebar />
@@ -190,15 +277,127 @@ function AnalyseView() {
   )
 }
 
+function RoleCoachCard({ roles, selectedRole, onSelect, onAnalyse, suggestions, loading, error, disabled }) {
+  return (
+    <div className="card space-y-5">
+      <div>
+        <p className="chip">Roadmap role coach</p>
+        <h3 className="mt-3 text-xl font-semibold text-fg">Improve your CV for a role</h3>
+        <p className="mt-1 text-sm text-muted">Choose a roadmap role to compare your resume with that role’s expected skills.</p>
+      </div>
+      <select
+        aria-label="Roadmap role"
+        className="input"
+        value={selectedRole}
+        onChange={e => onSelect(e.target.value)}
+      >
+        <option value="">Choose a roadmap role…</option>
+        {roles.map(role => <option key={role.slug} value={role.label}>{role.label}</option>)}
+      </select>
+      <button
+        onClick={onAnalyse}
+        disabled={disabled || loading || !selectedRole}
+        className="btn-primary w-full disabled:opacity-60"
+      >
+        {loading ? 'Analysing…' : 'Analyse CV for this role'}
+      </button>
+      <CoachStatus loading={loading} error={error} />
+      {suggestions && <SuggestionsPanel data={suggestions} />}
+    </div>
+  )
+}
+
+function JobCoachCard({ jobs, selectedJob, selectedJobId, onSelect, onAnalyse, suggestions, loading, jobsLoading, error, disabled }) {
+  const missing = selectedJob?.match_details?.missing_skills || []
+  return (
+    <div className="card space-y-5">
+      <div>
+        <p className="chip">Fit your CV</p>
+        <h3 className="mt-3 text-xl font-semibold text-fg">Fit your CV to a specific job</h3>
+        <p className="mt-1 text-sm text-muted">Choose a real matched job. Its description and requirements become the AI coach’s context.</p>
+      </div>
+      <select
+        aria-label="Job to analyse resume against"
+        className="input"
+        value={selectedJobId}
+        onChange={e => onSelect(e.target.value)}
+        disabled={jobsLoading || jobs.length === 0}
+      >
+        <option value="">
+          {jobsLoading ? 'Loading matched jobs…' : jobs.length ? 'Choose a job…' : 'No matched jobs available'}
+        </option>
+        {jobs.map(job => (
+          <option key={job.job_id} value={job.job_id}>
+            {[job.title, job.company].filter(Boolean).join(' · ')}
+          </option>
+        ))}
+      </select>
+      {selectedJob && (
+        <div className="rounded-xl border border-brand-400/30 bg-brand-500/10 px-4 py-3">
+          <p className="text-sm font-medium text-fg">{[selectedJob.title, selectedJob.company].filter(Boolean).join(' · ')}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {selectedJob.match_pct !== undefined && <span className="chip">{selectedJob.match_pct}% current match</span>}
+            {missing.slice(0, 3).map(skill => <span key={skill} className="chip border-amber-400/30 text-amber-500 dark:text-amber-200">Gap: {skill}</span>)}
+          </div>
+        </div>
+      )}
+      <button
+        onClick={onAnalyse}
+        disabled={disabled || loading || !selectedJobId}
+        className="btn-primary w-full disabled:opacity-60"
+      >
+        {loading ? 'Analysing…' : 'Fit CV to this job'}
+      </button>
+      <CoachStatus loading={loading} error={error} />
+      {suggestions && <SuggestionsPanel data={suggestions} />}
+      <div className="pt-2 border-t border-line">
+        <Link to="/jobs" className="btn-ghost w-full justify-center">Browse matching jobs →</Link>
+      </div>
+    </div>
+  )
+}
+
+function CoachStatus({ loading, error }) {
+  return (
+    <>
+      {error && (
+        <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+      {loading && (
+        <div className="flex items-center gap-3 text-sm text-muted">
+          <span className="h-4 w-4 rounded-full border-2 border-brand-400 border-t-transparent animate-spin" />
+          Analysing your CV — this takes 30–60 seconds…
+        </div>
+      )}
+    </>
+  )
+}
+
 function UploadArea({ file, onFile, onCancel }) {
   const [drag, setDrag] = useState(false)
+  const [error, setError] = useState(null)
+  const acceptFile = (candidate) => {
+    if (!candidate) return
+    if (!/\.(pdf|docx)$/i.test(candidate.name || '')) {
+      setError('Please choose a PDF or DOCX file.')
+      return
+    }
+    if (candidate.size > 10 * 1024 * 1024) {
+      setError('The CV must be smaller than 10 MB.')
+      return
+    }
+    setError(null)
+    onFile(candidate)
+  }
   return (
     <div
       onDragOver={(e) => { e.preventDefault(); setDrag(true) }}
       onDragLeave={() => setDrag(false)}
       onDrop={(e) => {
         e.preventDefault(); setDrag(false)
-        if (e.dataTransfer.files?.[0]) onFile(e.dataTransfer.files[0])
+        acceptFile(e.dataTransfer.files?.[0])
       }}
       className={`card border-dashed text-center transition-colors ${drag ? 'border-brand-400 bg-brand-500/10' : ''}`}
     >
@@ -210,7 +409,7 @@ function UploadArea({ file, onFile, onCancel }) {
       <h3 className="mt-3 text-base font-semibold text-fg">Drop your CV here</h3>
       <p className="mt-1 text-sm text-muted">PDF or DOCX, up to 10 MB</p>
       <label className="btn-primary mt-4 cursor-pointer">
-        <input type="file" accept=".pdf,.docx" className="hidden" onChange={(e) => onFile(e.target.files?.[0] || null)} />
+        <input type="file" accept=".pdf,.docx" className="hidden" onChange={(e) => acceptFile(e.target.files?.[0])} />
         Choose file
       </label>
       {file && (
@@ -220,6 +419,7 @@ function UploadArea({ file, onFile, onCancel }) {
           <button onClick={() => onFile(null)} className="text-muted hover:text-fg text-sm">✕</button>
         </div>
       )}
+      {error && <p className="mt-3 text-xs text-red-400">{error}</p>}
       {onCancel && (
         <button onClick={onCancel} className="mt-3 text-xs text-muted hover:text-fg transition block mx-auto">
           ← Use my saved resume instead
@@ -232,7 +432,7 @@ function UploadArea({ file, onFile, onCancel }) {
 function AnalyseSidebar() {
   const items = [
     { t: 'Powered by your saved CV', d: 'We use the resume you uploaded during onboarding. No need to re-upload every time.' },
-    { t: 'PII filtered out', d: 'IDs, addresses, marital status — never indexed.' },
+    { t: 'Contact PII redacted', d: 'Email addresses and phone numbers are removed before AI analysis.' },
     { t: 'AI coach in seconds', d: 'Strengths, gaps, keyword recommendations — all from one click.' },
   ]
   return (
@@ -325,8 +525,10 @@ const EMPTY_FORM = {
 }
 
 function BuildView() {
+  const { token, refreshUser } = useAuth()
   const [step, setStep] = useState(0)
   const [form, setForm] = useState(EMPTY_FORM)
+  const [saveState, setSaveState] = useState(null)
   const update = (section, value) => setForm((f) => ({ ...f, [section]: value }))
 
   const yamlPayload = useMemo(() => {
@@ -348,8 +550,33 @@ function BuildView() {
   }, [form])
 
   const yamlText = useMemo(() => toYaml(yamlPayload), [yamlPayload])
+  const resumeText = useMemo(() => payloadToResumeText(yamlPayload), [yamlPayload])
   const next = () => setStep((s) => Math.min(STEPS.length - 1, s + 1))
   const prev = () => setStep((s) => Math.max(0, s - 1))
+
+  const saveResume = async () => {
+    setSaveState({ type: 'loading', message: 'Saving your resume…' })
+    try {
+      const body = new URLSearchParams({
+        resume_text: resumeText,
+        resume_filename: `${slugify(form.personal.name || 'resume')}-generated.txt`,
+      })
+      const res = await fetch('/api/user/resume', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Could not save resume.')
+      await refreshUser()
+      setSaveState({ type: 'success', message: data.onboarding_done ? 'Saved. Jobs and roadmap now use this resume.' : 'Saved. Complete onboarding to choose a target role.' })
+    } catch (err) {
+      setSaveState({ type: 'error', message: err.message })
+    }
+  }
 
   const downloadYaml = () => {
     const blob = new Blob([yamlText + '\n'], { type: 'text/yaml' })
@@ -396,9 +623,58 @@ function BuildView() {
           </div>
         </div>
       </div>
-      <YamlPreviewPanel yaml={yamlText} onDownloadYaml={downloadYaml} onDownloadPdf={downloadPdf} pdfLoading={pdfLoading} />
+      <YamlPreviewPanel
+        yaml={yamlText}
+        onDownloadYaml={downloadYaml}
+        onDownloadPdf={downloadPdf}
+        pdfLoading={pdfLoading}
+        onSave={saveResume}
+        saveState={saveState}
+      />
     </div>
   )
+}
+
+function slugify(value) {
+  return String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'resume'
+}
+
+function payloadToResumeText(payload) {
+  const lines = []
+  if (payload.name) lines.push(payload.name)
+  if (payload.headline) lines.push(payload.headline)
+  const contact = [payload.contact?.email, payload.contact?.phone, payload.contact?.location].filter(Boolean).join(' · ')
+  if (contact) lines.push(contact)
+  if (payload.summary) lines.push('\nSUMMARY\n' + payload.summary)
+  if (payload.experience?.length) {
+    lines.push('\nEXPERIENCE')
+    payload.experience.forEach(item => {
+      lines.push([item.title, item.company, item.period].filter(Boolean).join(' · '))
+      if (item.description) lines.push(item.description)
+    })
+  }
+  if (payload.education?.length) {
+    lines.push('\nEDUCATION')
+    payload.education.forEach(item => lines.push([item.degree, item.school, item.period].filter(Boolean).join(' · ')))
+  }
+  if (payload.projects?.length) {
+    lines.push('\nPROJECTS')
+    payload.projects.forEach(item => {
+      lines.push(item.name)
+      if (item.description) lines.push(item.description)
+      if (item.link) lines.push(item.link)
+    })
+  }
+  const skillGroups = [
+    ['Technical skills', payload.skills?.technical],
+    ['Tools and infrastructure', payload.skills?.tools],
+    ['Soft skills', payload.skills?.soft],
+  ].filter(([, values]) => values?.length)
+  if (skillGroups.length) {
+    lines.push('\nSKILLS')
+    skillGroups.forEach(([label, values]) => lines.push(`${label}: ${values.join(', ')}`))
+  }
+  return lines.filter(Boolean).join('\n').trim()
 }
 
 function Stepper({ step, onJump }) {
@@ -586,7 +862,7 @@ function ReviewStep({ payload }) {
   )
 }
 
-function YamlPreviewPanel({ yaml, onDownloadYaml, onDownloadPdf, pdfLoading }) {
+function YamlPreviewPanel({ yaml, onDownloadYaml, onDownloadPdf, pdfLoading, onSave, saveState }) {
   return (
     <aside className="lg:col-span-2 lg:sticky lg:top-24 self-start space-y-4">
       <div className="card">
@@ -603,6 +879,10 @@ function YamlPreviewPanel({ yaml, onDownloadYaml, onDownloadPdf, pdfLoading }) {
             {pdfLoading ? 'Generating…' : 'Download PDF'}
           </button>
         </div>
+        <button onClick={onSave} disabled={saveState?.type === 'loading'} className="btn-ghost w-full mt-2 disabled:opacity-60">
+          {saveState?.type === 'loading' ? 'Saving…' : 'Save to my profile'}
+        </button>
+        {saveState && <p className={`mt-2 text-xs ${saveState.type === 'error' ? 'text-red-400' : saveState.type === 'success' ? 'text-emerald-400' : 'text-muted'}`}>{saveState.message}</p>}
       </div>
     </aside>
   )

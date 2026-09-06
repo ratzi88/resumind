@@ -20,6 +20,7 @@ const ROLE_ICONS = {
   'android':           '📱',
   'ios':               '🍎',
 }
+const MAX_FILE_BYTES = 10 * 1024 * 1024
 
 export default function Onboarding() {
   const { token, refreshUser } = useAuth()
@@ -33,6 +34,21 @@ export default function Onboarding() {
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
 
+  const acceptFile = (candidate) => {
+    if (!candidate) return
+    const validType = /\.(pdf|docx)$/i.test(candidate.name || '')
+    if (!validType) {
+      setError('Please choose a PDF or DOCX file.')
+      return
+    }
+    if (candidate.size > MAX_FILE_BYTES) {
+      setError('The resume must be smaller than 10 MB.')
+      return
+    }
+    setError(null)
+    setFile(candidate)
+  }
+
   useEffect(() => {
     fetch('/api/roles')
       .then(r => r.json())
@@ -44,12 +60,12 @@ export default function Onboarding() {
     e.preventDefault()
     setDragging(false)
     const f = e.dataTransfer.files?.[0]
-    if (f && (f.name.endsWith('.pdf') || f.name.endsWith('.docx'))) setFile(f)
+    acceptFile(f)
   }
 
   const handleFile = (e) => {
     const f = e.target.files?.[0]
-    if (f) setFile(f)
+    acceptFile(f)
   }
 
   const submit = async () => {
@@ -90,7 +106,7 @@ export default function Onboarding() {
           <div className="card">
             <h1 className="text-2xl font-bold text-fg mb-1">Upload your resume</h1>
             <p className="text-muted text-sm mb-6">
-              We'll analyse it to detect your current skills. PDF or DOCX, max 5 MB.
+              We'll analyse it to detect your current skills. PDF or DOCX, max 10 MB.
             </p>
 
             <div
@@ -121,6 +137,12 @@ export default function Onboarding() {
                 </>
               )}
             </div>
+
+            {error && (
+              <p className="mt-4 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">
+                {error}
+              </p>
+            )}
 
             {file && (
               <button

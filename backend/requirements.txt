@@ -1,4 +1,7 @@
 # ── CV parsing ────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
 pypdf
 python-docx
 pdfplumber
@@ -6,6 +9,9 @@ pdfplumber
 # ── LLM / AI ─────────────────────────────────────────────────────────────────
 openai          # used as OpenAI-compatible client for local Ollama + remote fallback
 python-dotenv
+psycopg2-binary
+python-jose[cryptography]
+passlib
 
 # ── recommendation engine ────────────────────────────────────────────────────
 sentence-transformers

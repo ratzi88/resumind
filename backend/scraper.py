@@ -1,6 +1,5 @@
 import sys
 import os
-import re
 from pypdf import PdfReader
 from docx import Document
 
@@ -28,8 +27,14 @@ def scrape_file(file_path, extension, ocr_lang="eng"):
                 ocr_needed_pages.append(i)
 
         if ocr_needed_pages:
-            from pdf2image import convert_from_path
-            import pytesseract
+            try:
+                from pdf2image import convert_from_path
+                import pytesseract
+            except ImportError as exc:
+                raise RuntimeError(
+                    "This PDF appears to be scanned. Install pdf2image and "
+                    "pytesseract, and make sure the Tesseract binary is available."
+                ) from exc
 
             print(f"OCR needed on {len(ocr_needed_pages)} page(s)...")
             images = convert_from_path(file_path, dpi=300)
@@ -43,6 +48,11 @@ def scrape_file(file_path, extension, ocr_lang="eng"):
     elif extension == ".docx":
         doc = Document(file_path)
         text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    text += "\n" + " | ".join(cells)
         return text.strip()
 
     else:

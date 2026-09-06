@@ -1,9 +1,9 @@
 """
-llm.py – resume improvement suggestions via local Ollama (Qwen 3.5 80b)
+llm.py – resume improvement suggestions via a local OpenAI-compatible Qwen endpoint
 or OpenAI-compatible API.
 
 Set in .env:
-    OLLAMA_BASE_URL=http://localhost:11434/v1   # local Qwen via Ollama
+    OLLAMA_BASE_URL=http://localhost:11434/v1   # local Qwen via Ollama/llama.cpp
     OLLAMA_MODEL=qwen2.5:72b
     # OR for OpenAI:
     OPENAI_API_KEY=sk-...
@@ -17,12 +17,18 @@ from scraper import scrape_file, get_file_extension
 load_dotenv()
 
 # ── client setup ─────────────────────────────────────────────────────────────
-# Defaults to local Ollama; falls back to OpenAI if OPENAI_API_KEY is set.
+# The endpoint is OpenAI-compatible; it can point to Ollama, llama.cpp, or
+# another explicitly configured server.
 _base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 _api_key  = os.getenv("OLLAMA_API_KEY", "ollama")  # Ollama ignores the key
 _model    = os.getenv("OLLAMA_MODEL", "qwen2.5:72b")
 
-client = OpenAI(base_url=_base_url, api_key=_api_key)
+client = OpenAI(
+    base_url=_base_url,
+    api_key=_api_key,
+    timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "120")),
+    max_retries=0,
+)
 
 
 def suggest_resume_improvements(resume_text: str, job_title: str) -> str:
@@ -32,6 +38,12 @@ def suggest_resume_improvements(resume_text: str, job_title: str) -> str:
     """
     response = client.chat.completions.create(
         model=_model,
+        max_tokens=int(os.getenv("LLM_MAX_TOKENS", "650")),
+        temperature=0.2,
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": False},
+            "reasoning_format": "none",
+        },
         messages=[
             {
                 "role": "system",

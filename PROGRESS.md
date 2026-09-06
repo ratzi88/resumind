@@ -1,6 +1,6 @@
 # ResuMind Project Progress
 
-Last updated: 2026-09-05
+Last updated: 2026-09-06
 
 ## Project overview
 
@@ -46,13 +46,55 @@ The frontend production build passes with this change.
 ### Active LLM alignment
 
 - Queried the llama.cpp OpenAI-compatible `/v1/models` endpoint to obtain the active model ID.
-- Changed `backend/.env` from the previous Gemma alias to `Qwen3.8-27B-UD-Q4_K_XL.gguf`.
+- Configured the deployed app to use `Qwen3.8-27B-UD-Q4_K_XL.gguf`.
 - Kept the API base URL at `http://192.168.1.72:8080/v1`.
+- Verified from the response headers and running process that port 8080 is the
+  llama.cpp server itself. LiteLLM is not in the request path.
 - Verified the configuration through the same Python OpenAI client used by the backend.
 - The configured model and response model both reported `Qwen3.8-27B-UD-Q4_K_XL.gguf`.
 - The test inference returned `ResuMind AI ready` successfully.
 
 The FastAPI backend must be restarted after an environment change because it reads the model name during application startup.
+
+### Resume coach and job-specific CV fitting
+
+- The Resume page is split into role-based coaching and job-specific CV fitting.
+- The role coach uses the same role catalog as the Roadmap page.
+- The job coach uses the selected job's title, company, description, required
+  skills, experience level, and deterministic skill-gap analysis as context.
+- Resume contact details are redacted before context is sent to the model.
+- The Qwen chat template now receives `enable_thinking=false` for these concise,
+  structured tasks.
+- Resume-coach responses are capped at 650 tokens; roadmap and onboarding calls
+  have separate bounded output limits.
+- Automatic OpenAI-client retries are disabled because llama.cpp currently has
+  one request slot and a retry would only add another slow request to its queue.
+- The frontend now detects non-JSON server responses and displays a useful error
+  instead of `Unexpected token '<'`.
+
+The original failure was caused by a request using the llama.cpp server default
+of 4,096 output tokens with Qwen reasoning enabled. It monopolised the only model
+slot, causing subsequent browser requests to wait and eventually receive a
+timeout response. A direct no-thinking test completed in about 1.1 seconds. The
+full authenticated CV analysis for job `3901961133` completed successfully with
+HTTP 200 in 17.44 seconds and returned an overall verdict, four strengths, four
+gaps, four improvements, and eight keywords.
+
+### Docker deployment
+
+The production image is deployed directly on the Proxmox Docker VM:
+
+- Application host: `192.168.1.99`
+- Application URL: `http://192.168.1.99:8000`
+- Container: `resumind`
+- Image: `resumind:local`
+- Published port: `8000:8000`
+- Restart policy: `unless-stopped`
+- Runtime environment file: `/etc/resumind/resumind.env`
+
+The container is healthy and its database connection to PostgreSQL/PGVector at
+`192.168.1.77:5432` has been verified. The application image does not contain
+llama.cpp, Ollama, LiteLLM, or PostgreSQL; those services remain external.
 
 ## Recommendation system
 
@@ -136,7 +178,7 @@ The server was initially tested successfully with Gemma 4 26B-A4B Instruct throu
 
 ### Current server state
 
-As of 2026-09-05, llama.cpp is healthy at:
+As of 2026-09-06, llama.cpp is healthy at:
 
 ```text
 http://192.168.1.72:8080/v1
@@ -156,6 +198,7 @@ Current server characteristics include:
 - Quantized KV cache
 - MTP speculative decoding
 - One parallel request slot
+- Direct OpenAI-compatible API; no LiteLLM proxy
 
 ## Current model configuration
 
@@ -164,6 +207,8 @@ The project currently has this model configured in `backend/.env`:
 ```env
 OLLAMA_BASE_URL=http://192.168.1.72:8080/v1
 OLLAMA_MODEL=Qwen3.8-27B-UD-Q4_K_XL.gguf
+LLM_TIMEOUT_SECONDS=120
+LLM_MAX_TOKENS=900
 ```
 
 This matches the model ID currently advertised by llama.cpp. A direct inference through the project's backend client completed successfully and confirmed that the response came from the same model ID.
@@ -172,12 +217,28 @@ No database password, JWT secret, SSH key, or other credential is included in th
 
 ## Remaining work
 
-1. Run an end-to-end onboarding request with a test resume.
-2. Verify resume suggestions, skill detection, job recommendations, and roadmap behavior through the UI.
-3. Add a systemd unit for llama.cpp if automatic startup after reboot is required.
-4. Update `README.md` from Flask terminology to FastAPI.
-5. Add the missing FastAPI runtime packages to `backend/requirements.txt`.
-6. Evaluate recommendation quality with labeled resume-to-job examples before changing the embedding model or similarity threshold.
+1. Complete a final manual browser pass for onboarding, resume coaching, jobs,
+   and roadmap behavior.
+2. Add a systemd unit for llama.cpp so it starts automatically after a reboot.
+3. Publish the app through the planned Cloudflare Tunnel and configure its public hostname.
+4. Evaluate recommendation quality with labeled resume-to-job examples before
+   changing the embedding model or similarity threshold.
+
+## Current working-tree improvements (not committed)
+
+- Added deterministic skill aliases, skill coverage, evidence excerpts, bounded fit scoring, and contact-PII redaction before AI/embedding calls.
+- Added pageable and filterable authenticated job search across the catalog, including remote, work type, experience, industry, and salary filters when enriched job columns are present.
+- Added job-specific roadmap context and made acquired roadmap skills influence the matching profile.
+- Added the ability to save a resume created by the browser builder to the authenticated profile.
+- Added enriched job ingestion for salary, benefits, industries, company size, employee counts, and posting dates.
+- Added an idempotent `backend/schema.sql`, `backend/.env.example`, safer upload/auth validation, clear scanned-PDF errors, and deterministic backend tests.
+- Updated the landing page and README to describe the active FastAPI behavior and explainable score instead of the previous 80%/contrastive-explanation claims.
+- Added role-based and job-specific CV coaching grounded in Roadmap roles and
+  real job records.
+- Added bounded direct llama.cpp requests, disabled extended Qwen thinking for
+  structured tasks, and made frontend AI-response parsing resilient.
+- Added and deployed the Docker production image on `192.168.1.99`; backend unit
+  tests and the frontend production build pass.
 
 ## Useful development commands
 

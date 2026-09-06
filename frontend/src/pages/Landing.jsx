@@ -51,10 +51,10 @@ function Hero() {
             </AuthLink>
           </div>
           <div className="mt-10 flex flex-wrap gap-2">
-            <span className="chip">Qwen 3.5 80b</span>
+            <span className="chip">Local Qwen inference</span>
             <span className="chip">Sentence-BERT</span>
-            <span className="chip">PGVector RAG</span>
-            <span className="chip">English-only · bias-aware</span>
+            <span className="chip">Explainable matching</span>
+            <span className="chip">Privacy-first</span>
           </div>
         </div>
 
@@ -120,7 +120,7 @@ function Flows() {
     {
       step: '02',
       title: 'See jobs that actually fit',
-      desc: 'Semantic vector matching surfaces only roles above an 80% match — with a transparent breakdown of why.',
+      desc: 'Semantic matching searches the full catalog and explains which skills support each estimated fit.',
       to: '/jobs',
       cta: 'Browse Jobs',
       icon: (
@@ -133,7 +133,7 @@ function Flows() {
     {
       step: '03',
       title: 'Follow your roadmap',
-      desc: 'Personal skill tree shows the gaps. Check off what you learn and the system updates your CV and re-ranks jobs.',
+      desc: 'Personal skill tree shows the gaps. Check off what you learn and your career profile re-ranks jobs.',
       to: '/roadmap',
       cta: 'See Roadmap',
       icon: (
@@ -191,11 +191,11 @@ function HowItWorks() {
     },
     {
       title: 'Match',
-      desc: 'Semantic search ranks jobs by similarity. Only matches ≥ 80% reach you — false positives stay out.',
+      desc: 'Semantic search ranks jobs with a transparent threshold and explicit skill coverage—not just keywords.',
     },
     {
       title: 'Explain',
-      desc: 'A contrastive explanation tells you exactly which skills boosted the score and which dragged it down.',
+      desc: 'Evidence-backed details show skills found in your CV, missing requirements, and supporting excerpts.',
     },
     {
       title: 'Grow',
@@ -230,10 +230,10 @@ function HowItWorks() {
 
 function Stats() {
   const stats = [
-    { value: '85%', label: 'Target recommendation accuracy' },
-    { value: '80%', label: 'Minimum match threshold' },
+    { value: '75/25', label: 'Semantic / skill score blend' },
+    { value: '25', label: 'Jobs per searchable page' },
     { value: '384', label: 'Embedding dimensions' },
-    { value: '100%', label: 'Local processing — no cloud' },
+    { value: '10 MB', label: 'Maximum resume upload' },
   ]
   return (
     <section className="py-16">

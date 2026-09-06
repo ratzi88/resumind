@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from './shared.jsx'
 import { useAuth } from '../lib/AuthContext.jsx'
 
@@ -18,6 +19,8 @@ function stageIsUnlocked(stage, byStage) {
 
 export default function Roadmap() {
   const { token } = useAuth()
+  const [searchParams] = useSearchParams()
+  const jobId = searchParams.get('job_id')
   const [data,    setData]    = useState(null)
   const [skills,  setSkills]  = useState([])
   const [loading, setLoading] = useState(true)
@@ -25,7 +28,8 @@ export default function Roadmap() {
 
   useEffect(() => {
     if (!token) return
-    fetch('/api/user/roadmap', { headers: { Authorization: `Bearer ${token}` } })
+    const query = jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''
+    fetch(`/api/user/roadmap${query}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json().then(d => ({ ok: r.ok, d })))
       .then(({ ok, d }) => {
         if (!ok) throw new Error(d.detail || 'Could not load roadmap.')
@@ -34,7 +38,7 @@ export default function Roadmap() {
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [token])
+  }, [token, jobId])
 
   const { score, acquired, byStage, nextSkills } = useMemo(() => {
     const total   = skills.reduce((s, x) => s + x.impact, 0)
@@ -64,13 +68,25 @@ export default function Roadmap() {
   const toggle = async (skillName, currentAcquired) => {
     const next = !currentAcquired
     setSkills(prev => prev.map(s => s.skill_name === skillName ? { ...s, acquired: next } : s))
-    const body = new URLSearchParams({ skill_name: skillName, acquired: String(next) })
-    const res = await fetch('/api/user/skills/toggle', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-    })
-    if (!res.ok) {
+    try {
+      const body = new URLSearchParams({ skill_name: skillName, acquired: String(next) })
+      const res = await fetch('/api/user/skills/toggle', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+      if (!res.ok) throw new Error('Could not save skill progress.')
+      if (jobId) {
+        const refreshed = await fetch(`/api/user/roadmap?job_id=${encodeURIComponent(jobId)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (refreshed.ok) {
+          const nextData = await refreshed.json()
+          setData(nextData)
+          setSkills(nextData.skills)
+        }
+      }
+    } catch {
       setSkills(prev => prev.map(s => s.skill_name === skillName ? { ...s, acquired: currentAcquired } : s))
     }
   }
@@ -98,8 +114,12 @@ export default function Roadmap() {
       <PageHeader
         eyebrow="Your roadmap"
         title={data.role_label}
-        subtitle="Work through each stage in order — stages unlock as you progress. Click any skill to mark it learned."
+        subtitle={data.target_job
+          ? `A focused plan for ${data.target_job.title}${data.target_job.company ? ` at ${data.target_job.company}` : ''}.`
+          : 'Work through each stage in order — stages unlock as you progress.'}
       />
+
+      {data.target_job && <TargetJobPanel job={data.target_job} match={data.job_match} />}
 
       <div className="mt-8 grid lg:grid-cols-4 gap-6 items-start">
         <div className="lg:col-span-3 space-y-4">
@@ -109,8 +129,8 @@ export default function Roadmap() {
           <StageMap byStage={byStage} onToggle={toggle} />
         </div>
 
-        <ProgressPanel
-          score={score}
+      <ProgressPanel
+        score={score}
           acquiredCount={acquired.length}
           total={skills.length}
           roleLabel={data.role_label}
@@ -221,17 +241,19 @@ function StageColumn({ stage, label, skills, unlocked, acquiredCount, onToggle }
 
 function SkillNode({ skill, unlocked, onToggle }) {
   const { skill_name, acquired, impact } = skill
+  const disabled = !unlocked && !acquired
   return (
     <li>
       <button
+        disabled={disabled}
         onClick={() => onToggle(skill_name, acquired)}
-        title={acquired ? 'Click to unmark' : 'Click to mark as learned'}
+        title={disabled ? 'Complete at least half of the previous stage first' : acquired ? 'Click to unmark' : 'Click to mark as learned'}
         className={`w-full text-left flex items-center gap-2 px-2.5 py-2 rounded-xl border text-xs font-medium transition group ${
           acquired
             ? 'bg-emerald-500/10 border-emerald-400/30 text-emerald-600 dark:text-emerald-300 hover:bg-emerald-500/15'
             : unlocked
             ? 'bg-surface-2/60 border-line text-fg hover:border-brand-400/50 hover:bg-brand-500/5'
-            : 'bg-transparent border-line/20 text-muted/50 hover:border-line/40'
+            : 'bg-transparent border-line/20 text-muted/50 cursor-not-allowed'
         }`}
       >
         <span className={`shrink-0 h-4 w-4 grid place-items-center rounded-full border text-[9px] font-bold transition ${
@@ -276,7 +298,7 @@ function ProgressPanel({ score, acquiredCount, total, roleLabel, byStage }) {
         <div className="absolute inset-0 grid place-items-center">
           <div className="text-center">
             <p className="text-3xl font-bold text-fg">{score}%</p>
-            <p className="text-[10px] uppercase tracking-wider text-muted">Match</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted">Progress</p>
           </div>
         </div>
       </div>
@@ -320,8 +342,48 @@ function ProgressPanel({ score, acquiredCount, total, roleLabel, byStage }) {
       </div>
 
       <p className="text-xs text-muted leading-relaxed">
-        Stages unlock at 50% completion. Click any skill — even locked ones — to mark it acquired.
+        Stages unlock at 50% completion. Complete the current stage before moving forward.
       </p>
     </aside>
+  )
+}
+
+function TargetJobPanel({ job, match }) {
+  const matched = match?.matched_skills || []
+  const missing = match?.missing_skills || []
+  return (
+    <div className="mt-8 card border-brand-400/20 bg-brand-500/5">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <p className="chip">Target job</p>
+          <h2 className="mt-3 text-xl font-semibold text-fg">{job.title}</h2>
+          <p className="text-sm text-muted">{[job.company, job.location].filter(Boolean).join(' · ')}</p>
+        </div>
+        {match?.coverage_pct !== null && match?.coverage_pct !== undefined && (
+          <div className="text-left sm:text-right">
+            <p className="text-xs uppercase tracking-wider text-muted">Skill coverage</p>
+            <p className="text-3xl font-bold text-fg">{match.coverage_pct}%</p>
+          </div>
+        )}
+      </div>
+      <div className="mt-5 grid md:grid-cols-2 gap-4">
+        <SkillList title="Already covered" values={matched} tone="good" empty="No explicit matches yet." />
+        <SkillList title="Prioritize next" values={missing} tone="warn" empty="No structured gaps detected." />
+      </div>
+    </div>
+  )
+}
+
+function SkillList({ title, values, tone, empty }) {
+  const colors = tone === 'good'
+    ? 'border-emerald-400/20 bg-emerald-500/5 text-emerald-500 dark:text-emerald-300'
+    : 'border-amber-400/20 bg-amber-500/5 text-amber-500 dark:text-amber-300'
+  return (
+    <div className={`rounded-xl border p-4 ${colors}`}>
+      <p className="text-xs uppercase tracking-wider mb-2">{title}</p>
+      {values.length > 0
+        ? <div className="flex flex-wrap gap-1.5">{values.map(value => <span key={value} className="chip">{value}</span>)}</div>
+        : <p className="text-xs text-muted">{empty}</p>}
+    </div>
   )
 }
