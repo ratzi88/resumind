@@ -14,6 +14,29 @@ The application consists of a React/Vite frontend and a FastAPI backend. The REA
 
 ## Work completed
 
+### User market statistics (2026-09-07)
+
+- Added **Your statistics** to desktop and mobile navigation with a protected
+  `/statistics` page.
+- Added authenticated, read-only `GET /api/user/statistics`. It uses the exact
+  matching profile and all jobs above the existing semantic recommendation
+  threshold; no chat-model request or database write is involved.
+- Each normalized skill is counted once per job. The page shows recommended-job
+  count, average estimated fit, fit distribution, most demanded skills already
+  in the profile, most demanded profile gaps, and the top 50 skills overall.
+  Every percentage includes its numerator and denominator.
+- Wording distinguishes a skill mention from a mandatory requirement because
+  source postings may describe required, preferred or alternative technologies.
+  Fit remains a product score rather than hiring probability.
+- Verification: 55 backend tests and the production frontend build pass. A
+  mocked browser test covers authentication, the Docker 70% example, strongest
+  skills, methodology, desktop/mobile navigation and responsive width. A
+  read-only real-data check calculated aggregates across 790 matched jobs, 784
+  with recognizable skills, without exposing resume text or changing user data.
+  Deployed to `http://192.168.1.99:8000`; the container is healthy and the
+  deployed statistics browser check passes. The previous recommendation-only
+  container is retained as `resumind-before-statistics-20260907`.
+
 ### Project inspection and startup
 
 - Inspected the frontend, backend, recommendation engine, authentication flow, ingestion scripts, and runtime configuration.
@@ -254,6 +277,12 @@ probability of hiring or a validated success rate.
 
 `all-MiniLM-L6-v2` was selected as a practical baseline because it is small, fast on CPU, works locally, and supports semantic matching better than simple keyword comparison. A future improvement would retrieve a larger candidate set and rerank it with a cross-encoder.
 
+The same candidate set feeds **Your statistics**. For each skill, demand is
+calculated as `jobs mentioning the skill / all recommended jobs * 100`. Skill
+aliases are normalized, and repeated mentions inside one posting count only once.
+The page reports how many postings had recognizable skill data because a detected
+mention is not guaranteed to be a mandatory requirement.
+
 ## RAG and roadmap behavior
 
 The project contains two related roadmap paths.
@@ -383,6 +412,8 @@ No database password, JWT secret, SSH key, or other credential is included in th
   structured tasks, and made frontend AI-response parsing resilient.
 - Added and deployed the Docker production image on `192.168.1.99`; backend unit
   tests and the frontend production build pass.
+- Added GitHub and CI/CD to the DevOps roadmap. Git and GitHub remain separate
+  cards but share CV detection and manually saved progress.
 
 ## Useful development commands
 

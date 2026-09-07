@@ -27,6 +27,23 @@ class RoadmapTest(unittest.TestCase):
         rows = [dict(skill_name=name, acquired=False) for name in names]
         self.assertTrue(all(r['acquired'] for r in resolve_role_progress(rows, 'Linux, Bash, networking')))
 
+    def test_git_in_cv_also_acquires_github(self):
+        rows = [dict(skill_name='Git', acquired=False), dict(skill_name='GitHub', acquired=False)]
+        resolved = resolve_role_progress(rows, 'Used Git for version control')
+        self.assertTrue(all(row['acquired'] for row in resolved))
+        self.assertTrue(all(row['detected_in_resume'] for row in resolved))
+
+    def test_saved_github_progress_also_acquires_git(self):
+        rows = [dict(skill_name='Git', acquired=False), dict(skill_name='GitHub', acquired=True)]
+        self.assertTrue(all(row['acquired'] for row in resolve_role_progress(rows, 'Python')))
+
+    def test_unchecking_linked_git_skills_overrides_cv_detection(self):
+        rows = [
+            dict(skill_name='Git', acquired=False, manual_override=True),
+            dict(skill_name='GitHub', acquired=False, manual_override=True),
+        ]
+        self.assertFalse(any(row['acquired'] for row in resolve_role_progress(rows, 'Git and GitHub')))
+
     def test_job_roadmap_uses_posting_not_onboarding_role(self):
         analysis = analyze_job_skills('Python developer', None, 'Python and Docker required')
         catalog = [dict(skill_name='Python', category='Language', stage=1),

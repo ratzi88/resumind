@@ -6,6 +6,7 @@ import Login from './pages/Login.jsx'
 import Onboarding from './pages/Onboarding.jsx'
 import Resume from './pages/Resume.jsx'
 import Jobs from './pages/Jobs.jsx'
+import Statistics from './pages/Statistics.jsx'
 import Roadmap from './pages/Roadmap.jsx'
 import NotFound from './pages/NotFound.jsx'
 import { useAuth } from './lib/AuthContext.jsx'
@@ -37,6 +38,9 @@ export default function App() {
           } />
           <Route path="/jobs" element={
             <ProtectedRoute><Jobs /></ProtectedRoute>
+          } />
+          <Route path="/statistics" element={
+            <ProtectedRoute><Statistics /></ProtectedRoute>
           } />
           <Route path="/roadmap" element={
             <ProtectedRoute><Roadmap /></ProtectedRoute>

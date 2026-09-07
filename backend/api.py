@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Depends, Query
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Depends, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,8 +16,13 @@ from sentence_transformers import SentenceTransformer
 
 from scraper import scrape_file, get_file_extension
 from auth import hash_password, verify_password, create_token, get_current_user_id
-from matching import analyze_skills, analyze_job_skills, compute_match_pct, normalize_skill_name, redact_pii, rank_job_matches, extract_job_skills
-from roadmap import resolve_role_progress, build_job_roadmap, apply_job_progress
+from matching import analyze_skills, analyze_job_skills, compute_match_pct, normalize_skill_name, redact_pii, rank_job_matches, extract_job_skills, job_market_statistics
+from roadmap import (
+    resolve_role_progress,
+    build_job_roadmap,
+    apply_job_progress,
+    linked_role_skill_names,
+)
 from learning_resources import with_learning_resources
 from job_explanations import explain_job_match, posting_plain_text
 
@@ -901,14 +906,24 @@ def toggle_skill(
             )
             if not cur.fetchone():
                 raise HTTPException(404, "Skill is not part of your roadmap.")
-        cur.execute(
+        skill_names = (skill_name,)
+        if not job_id:
+            linked_names = linked_role_skill_names(skill_name)
+            cur.execute(
+                "SELECT skill_name FROM role_skills WHERE role = %s AND skill_name = ANY(%s)",
+                (progress_role, list(linked_names)),
+            )
+            available = {row['skill_name'] for row in cur.fetchall()}
+            skill_names = tuple(name for name in linked_names if name in available) or (skill_name,)
+        psycopg2.extras.execute_values(
+            cur,
             """
             INSERT INTO user_skills (user_id, role, skill_name, acquired, manual_override)
-            VALUES (%s, %s, %s, %s, TRUE)
+            VALUES %s
             ON CONFLICT (user_id, role, skill_name) DO UPDATE
               SET acquired = EXCLUDED.acquired, manual_override = TRUE, updated_at = NOW()
             """,
-            (user_id, progress_role, skill_name, acquired),
+            [(user_id, progress_role, name, acquired, True) for name in skill_names],
         )
         conn.commit()
         return {"ok": True}
@@ -996,6 +1011,30 @@ def get_job_explanation(job_id: str, user_id: int = Depends(get_current_user_id)
     result = explain_job_match(job, profile['resume_text'], profile['career_text'], raw_score, embedder)
     result['embedding_model'] = EMBEDDING_MODEL
     return result
+
+
+@app.get('/api/user/statistics')
+def get_user_statistics(response: Response, user_id: int = Depends(get_current_user_id)):
+    """Market statistics across all jobs recommended to the current profile."""
+    response.headers['Cache-Control'] = 'no-store'
+    conn = get_db()
+    cur = None
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        profile = _load_matching_profile(cur, user_id)
+        career_text = profile['career_text']
+        embedding = get_embedder().encode(career_text, normalize_embeddings=True).tolist()
+        rows, _ = _query_job_matches(cur, embedding)
+        return {
+            **job_market_statistics(rows, career_text),
+            "match_threshold": MATCH_THRESHOLD,
+            "score_method": "75% semantic similarity + 25% explicit skill coverage",
+            "definition": "Jobs whose semantic similarity is at or above the recommendation threshold.",
+        }
+    finally:
+        if cur:
+            cur.close()
+        conn.close()
 
 
 # ── Production frontend ──────────────────────────────────────────────────────

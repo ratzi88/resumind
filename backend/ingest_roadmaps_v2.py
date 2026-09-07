@@ -275,6 +275,13 @@ SKILLS_MAP = {
     # software-architect: all generic topic labels → use HARDCODED below
 }
 
+# Curated additions that are useful as explicit skills but do not have their
+# own topic node in the source roadmap. Git and GitHub split one foundation
+# weight because their progress is linked by the application.
+ROLE_SKILL_ADDITIONS = {
+    "devops": [(1, "GitHub", 5), (4, "CI/CD", 4)],
+}
+
 # Roles with no JSON or whose topic list is too generic — fully hardcoded
 HARDCODED = {
     "devsecops": [
@@ -397,6 +404,16 @@ def build_from_json(role: str):
     # Impact weight: earlier stages score higher
     stage_weight = {1: 10, 2: 8, 3: 6, 4: 4}
     records = [(stage, name, stage_weight[stage]) for name, stage in staged]
+    if role == "devops":
+        records = [
+            (stage, name, 5 if name == "Git" else weight)
+            for stage, name, weight in records
+        ]
+    existing = {name for _, name, _ in records}
+    records.extend(
+        record for record in ROLE_SKILL_ADDITIONS.get(role, ())
+        if record[1] not in existing
+    )
     return normalize_impacts(records)
 
 

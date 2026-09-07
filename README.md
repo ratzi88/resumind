@@ -35,12 +35,13 @@ ResuMind/
 
 ---
 
-## Three user flows
+## Core user flows
 
 | Flow | Description |
 |------|-------------|
 | **1 – Resume** | Upload a PDF/DOCX **or** build one via a 6-step form → YAML → PDF; generated resumes can be saved to the profile |
 | **2 – Jobs** | Searchable semantic matching with skill coverage, CV evidence, salary, remote, work-type, and experience filters |
+| **Statistics** | Deterministic skill-demand and fit statistics across every job currently recommended to the user's profile |
 | **3 – Roadmap** | Role and job-specific learning plans, with CV-detected skills and saved manual progress; acquired skills influence future job matching |
 
 ---
@@ -86,15 +87,40 @@ updated backend (run from `backend`, with `DATABASE_URL` exported):
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/20260907_roadmap_manual_override.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/20260907_devops_git_github_cicd.sql
 ```
 
 It adds a flag so explicit skill check/uncheck choices take precedence over CV
-detection. Existing post-onboarding skill updates are preserved as manual choices.
-The migration is idempotent and does not delete profiles or progress.
+detection, and adds GitHub and CI/CD to the DevOps roadmap. Git and GitHub are
+displayed separately but share learned progress. Existing post-onboarding skill
+updates are preserved as manual choices. Both migrations are idempotent and do
+not delete profiles or progress.
 
 Jobs default to **Highest fit first**: all candidates passing the semantic
 threshold and filters are ranked by the displayed score before pagination
 (75% semantic similarity + 25% detected skill coverage). Title A–Z remains available.
+
+### Your statistics
+
+The authenticated **Your statistics** navbar page analyses every job currently
+passing the user's recommendation threshold. For each detected skill it reports:
+
+- the number and percentage of recommended postings that mention the skill;
+- whether the skill is found in the saved CV or acquired roadmap progress;
+- the user's strongest skills ordered by demand;
+- the most frequently mentioned skills not found in the profile;
+- average estimated fit and strong/good/exploratory fit distribution.
+
+For example, “Docker — 70%” means that 7 of 10 recommended job postings mention
+Docker. It does **not** mean the candidate has a 70% hiring probability, and a
+posting mention can represent a mandatory skill, preference, or descriptive
+technology. The page shows its denominator and skill-data coverage so the number
+can be explained during evaluation.
+
+`GET /api/user/statistics` is authenticated, read-only, and uses the same profile,
+recommendation threshold, embedding, skill aliases, explicit roadmap progress,
+and 75/25 fit formula as the Jobs page. Each skill is counted at most once per
+posting. The calculations are deterministic and do not call the chat model.
 
 ### Match explanations and full job details
 
@@ -244,7 +270,7 @@ cd frontend && npm run build
 cd ../backend && python -m unittest discover -s tests -v
 ```
 
-The 46 deterministic backend tests cover matching/ranking, roadmap progress,
+The 55 deterministic backend tests cover matching/ranking, market statistics, roadmap progress,
 learning resources, score explanations, real excerpt evidence, HTML-to-text
 display, bounded inference work, token-window diagnostics and contact-PII redaction.
 The full end-to-end flow still requires a configured PostgreSQL/PGVector database

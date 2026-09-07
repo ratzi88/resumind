@@ -6,6 +6,7 @@ import { useAuth } from '../lib/AuthContext.jsx'
 const links = [
   { to: '/resume', label: 'Resume' },
   { to: '/jobs',   label: 'Jobs' },
+  { to: '/statistics', label: 'Your statistics' },
   { to: '/roadmap',label: 'Roadmap' },
 ]
 
@@ -56,7 +57,7 @@ export default function Navbar() {
         </Link>
 
         {user && (
-          <div className="hidden md:flex items-center gap-1">
+          <div className="hidden lg:flex items-center gap-1">
             {links.map((l) => (
               <NavLink
                 key={l.to}
@@ -75,7 +76,7 @@ export default function Navbar() {
           </div>
         )}
 
-        <div className="hidden md:flex items-center gap-2">
+        <div className="hidden lg:flex items-center gap-2">
           <ThemeToggle />
           {user ? (
             <div ref={accountRef} className="relative">
@@ -138,7 +139,7 @@ export default function Navbar() {
           )}
         </div>
 
-        <div className="md:hidden flex items-center gap-2">
+        <div className="lg:hidden flex items-center gap-2">
           <ThemeToggle />
           <button
             aria-label="Toggle menu"
@@ -161,7 +162,7 @@ export default function Navbar() {
       </nav>
 
       {open && (
-        <div className="md:hidden border-t border-line bg-bg/95">
+        <div className="lg:hidden border-t border-line bg-bg/95">
           <div className="px-4 py-3 flex flex-col gap-1">
             {user && links.map((l) => (
               <NavLink

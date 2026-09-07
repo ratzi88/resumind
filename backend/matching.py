@@ -344,3 +344,57 @@ def rank_job_matches(rows: Iterable[dict], resume_text: str, *, sort: str = "sco
     ranked.sort(key=lambda item: item[0])
     offset = (page - 1) * limit
     return [row for _, row in ranked[offset:offset + limit]]
+
+
+def job_market_statistics(rows: Iterable[dict], profile_text: str) -> dict:
+    """Aggregate skill demand across every recommended job, once per posting.
+
+    Percentages use all jobs above the recommendation threshold as the
+    denominator. Detected skills may be mandatory, preferred, or simply
+    mentioned in a posting, so the API deliberately avoids claiming otherwise.
+    """
+
+    jobs = list(rows)
+    total = len(jobs)
+    skills: dict[str, dict] = {}
+    jobs_with_skills = 0
+    fits = []
+    bands = {"strong": 0, "good": 0, "exploratory": 0}
+    presence: dict[str, bool] = {}
+
+    for row in jobs:
+        required = extract_job_skills(row.get("skills_desc"), row.get("description"))["required_skills"]
+        seen = set()
+        matched = 0
+        for name in required:
+            key = normalize_skill_name(name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            if key not in presence:
+                presence[key] = skill_present(name, profile_text)
+            matched += presence[key]
+            item = skills.setdefault(key, {"name": name, "job_count": 0, "in_profile": presence[key]})
+            item["job_count"] += 1
+        if seen:
+            jobs_with_skills += 1
+
+        fit = compute_match_pct(row.get("raw_score") or 0, matched, len(seen))
+        fits.append(fit)
+        bands["strong" if fit >= 80 else "good" if fit >= 65 else "exploratory"] += 1
+
+    ordered = sorted(skills.values(), key=lambda item: (-item["job_count"], item["name"].casefold()))
+    for item in ordered:
+        item["percentage"] = round(item["job_count"] / total * 100, 1) if total else 0.0
+
+    strongest = [item for item in ordered if item["in_profile"]][:8]
+    gaps = [item for item in ordered if not item["in_profile"]][:8]
+    return {
+        "total_jobs": total,
+        "jobs_with_detected_skills": jobs_with_skills,
+        "average_fit": round(sum(fits) / total, 1) if total else None,
+        "fit_bands": bands,
+        "strongest_skills": strongest,
+        "skills_to_strengthen": gaps,
+        "all_skills": ordered[:50],
+    }

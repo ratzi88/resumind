@@ -3,6 +3,22 @@
 from matching import normalize_skill_name, skill_present
 
 
+# These are shown as separate roadmap cards because they are useful concepts to
+# explain independently, but progress is shared: practical Git use normally
+# includes working with a hosted repository such as GitHub.
+LINKED_ROLE_SKILLS = (
+    frozenset(("Git", "GitHub")),
+)
+
+
+def linked_role_skill_names(skill_name: str) -> tuple[str, ...]:
+    key = normalize_skill_name(skill_name)
+    for group in LINKED_ROLE_SKILLS:
+        if key in {normalize_skill_name(name) for name in group}:
+            return tuple(sorted(group))
+    return (skill_name,)
+
+
 def resolve_role_progress(skills: list[dict], resume_text: str) -> list[dict]:
     resolved = []
     for row in skills:
@@ -14,6 +30,28 @@ def resolve_role_progress(skills: list[dict], resume_text: str) -> list[dict]:
         else:
             skill['acquired'] = bool(skill.get('acquired'))
         resolved.append(skill)
+
+    # Keep linked cards consistent. An explicit user choice has priority over
+    # CV detection; otherwise either saved skill or either CV term acquires both.
+    for group in LINKED_ROLE_SKILLS:
+        linked = [
+            skill for skill in resolved
+            if normalize_skill_name(skill['skill_name']) in {
+                normalize_skill_name(name) for name in group
+            }
+        ]
+        if len(linked) < 2:
+            continue
+        detected = any(skill_present(name, resume_text) for name in group)
+        manual = [skill for skill in linked if skill.get('manual_override')]
+        acquired = (
+            any(skill['acquired'] for skill in manual)
+            if manual
+            else detected or any(skill['acquired'] for skill in linked)
+        )
+        for skill in linked:
+            skill['detected_in_resume'] = detected
+            skill['acquired'] = acquired
     return resolved
 
 

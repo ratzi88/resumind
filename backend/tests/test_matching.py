@@ -5,6 +5,7 @@ from matching import (
     analyze_skills,
     compute_match_pct,
     extract_job_skills,
+    job_market_statistics,
     parse_required_skills,
     rank_job_matches,
     redact_pii,
@@ -36,6 +37,36 @@ class MatchingHelpersTest(unittest.TestCase):
                 dict(job_id='2', title='B', raw_score=0.8, skills_desc='Docker')]
         self.assertEqual(rank_job_matches(rows, 'Python')[0]['job_id'], '1')
         self.assertEqual(rank_job_matches(rows, 'Docker')[0]['job_id'], '2')
+
+    def test_market_statistics_count_each_skill_once_per_recommended_job(self):
+        rows = [
+            dict(job_id='1', raw_score=0.8, skills_desc='Python; Docker; Docker'),
+            dict(job_id='2', raw_score=0.7, skills_desc='Docker; Kubernetes'),
+            dict(job_id='3', raw_score=0.9, description='Join our growing team!'),
+        ]
+        result = job_market_statistics(rows, 'Built Python services.')
+        self.assertEqual(result['total_jobs'], 3)
+        self.assertEqual(result['jobs_with_detected_skills'], 2)
+        docker = next(item for item in result['all_skills'] if item['name'] == 'Docker')
+        self.assertEqual(docker['job_count'], 2)
+        self.assertEqual(docker['percentage'], 66.7)
+        self.assertFalse(docker['in_profile'])
+        self.assertEqual(result['strongest_skills'][0]['name'], 'Python')
+        self.assertEqual(result['skills_to_strengthen'][0]['name'], 'Docker')
+        self.assertEqual(result['fit_bands'], {'strong': 1, 'good': 1, 'exploratory': 1})
+        self.assertEqual(result['average_fit'], 71.7)
+
+    def test_market_statistics_deduplicate_aliases_and_handle_no_jobs(self):
+        rows = [dict(job_id='1', raw_score=0.8, skills_desc='Postgres; PostgreSQL')]
+        result = job_market_statistics(rows, 'Used PostgreSQL.')
+        self.assertEqual(len(result['all_skills']), 1)
+        self.assertEqual(result['all_skills'][0]['job_count'], 1)
+        self.assertTrue(result['all_skills'][0]['in_profile'])
+        self.assertEqual(job_market_statistics([], ''), {
+            'total_jobs': 0, 'jobs_with_detected_skills': 0, 'average_fit': None,
+            'fit_bands': {'strong': 0, 'good': 0, 'exploratory': 0},
+            'strongest_skills': [], 'skills_to_strengthen': [], 'all_skills': [],
+        })
 
     def test_cached_extraction_returns_independent_lists(self):
         first = extract_job_skills('Python; Docker', '')

@@ -88,7 +88,7 @@ export default function Jobs() {
   return (
     <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12 sm:py-16">
       <PageHeader
-        eyebrow="Flow 2"
+        eyebrow="Your Recommended Jobs"
         title="Jobs that fit you"
         subtitle="Search the full job catalog and see exactly which skills support—or weaken—each match."
       />
