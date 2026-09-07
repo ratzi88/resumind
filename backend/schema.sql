@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS user_skills (
     role TEXT NOT NULL,
     skill_name TEXT NOT NULL,
     acquired BOOLEAN NOT NULL DEFAULT FALSE,
+    manual_override BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, role, skill_name)
 );
@@ -70,6 +71,20 @@ CREATE TABLE IF NOT EXISTS jobs (
 ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS onboarding_done BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE user_skills ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+-- Same preservation rule as migrations/20260907_roadmap_manual_override.sql.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'user_skills'
+          AND column_name = 'manual_override'
+    ) THEN
+        ALTER TABLE user_skills ADD COLUMN manual_override BOOLEAN NOT NULL DEFAULT FALSE;
+        UPDATE user_skills us SET manual_override = TRUE
+        FROM user_profiles p
+        WHERE p.user_id = us.user_id AND us.updated_at > p.updated_at;
+    END IF;
+END $$;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS max_salary NUMERIC;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS med_salary NUMERIC;

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PageHeader } from './shared.jsx'
 import { useAuth } from '../lib/AuthContext.jsx'
+import WhyThisMatch from '../components/WhyThisMatch.jsx'
+import JobDetailsDialog, { safeApplyUrl } from '../components/JobDetailsDialog.jsx'
 
 const EXPERIENCE_OPTIONS = ['Internship', 'Entry level', 'Associate', 'Mid-Senior level', 'Director', 'Executive']
 const WORK_TYPE_OPTIONS = ['Full-time', 'Part-time', 'Contract', 'Temporary', 'Volunteer', 'Internship']
@@ -106,7 +108,7 @@ export default function Jobs() {
             </svg>
           </label>
           <select aria-label="Sort jobs" value={sort} onChange={e => { setPage(1); setSort(e.target.value) }} className="input lg:w-44">
-            <option value="score">Best match</option>
+            <option value="score">Highest fit first</option>
             <option value="title">Title A–Z</option>
           </select>
         </div>
@@ -160,7 +162,7 @@ export default function Jobs() {
       </div>
 
       <div className="mt-4 grid lg:grid-cols-5 gap-6">
-        <div className="lg:col-span-3 space-y-3">
+        <div className="lg:col-span-3 min-w-0 space-y-3">
           {!loading && jobs.length === 0 && (
             <div className="card text-center text-muted space-y-3">
               <p>No jobs match these filters.</p>
@@ -183,7 +185,7 @@ export default function Jobs() {
             </div>
           )}
         </div>
-        <ExplainPanel job={selected} />
+        <ExplainPanel key={selected?.job_id || 'empty'} job={selected} />
       </div>
     </section>
   )
@@ -242,6 +244,7 @@ function ScoreBadge({ score }) {
 
 function ExplainPanel({ job }) {
   const navigate = useNavigate()
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   if (!job) {
     return <aside className="card lg:col-span-2 text-center text-muted">Select a job to see the evidence behind its score.</aside>
@@ -250,10 +253,11 @@ function ExplainPanel({ job }) {
   const details = job.match_details || {}
   const matched = details.matched_skills || []
   const missing = details.missing_skills || []
-  const evidence = (details.skill_details || []).filter(skill => skill.status === 'matched' && skill.evidence).slice(0, 3)
+  const hasJobSkills = matched.length + missing.length > 0
+  const applyUrl = safeApplyUrl(job.apply_url)
 
   return (
-    <aside className="card lg:col-span-2 lg:sticky lg:top-24 self-start space-y-5">
+    <aside className="card lg:col-span-2 min-w-0 self-start space-y-5">
       <div>
         <p className="chip">Match details</p>
         <h3 className="mt-3 text-xl font-semibold text-fg">{job.title}</h3>
@@ -268,33 +272,25 @@ function ExplainPanel({ job }) {
         <div className="mt-2 h-2 rounded-full bg-surface-2 overflow-hidden">
           <div className="h-full bg-gradient-to-r from-brand-400 to-emerald-400 transition-all" style={{ width: `${job.match_pct}%` }} />
         </div>
-        <p className="mt-2 text-xs text-muted">Semantic similarity: {Math.round((job.semantic_similarity || 0) * 100)}% · Skill coverage: {job.skill_coverage_pct ?? '—'}%</p>
+        <p className="mt-2 text-xs text-muted">Semantic similarity: {Math.round((job.semantic_similarity || 0) * 100)}% · Skill coverage: {job.skill_coverage_pct == null ? 'Not available' : `${job.skill_coverage_pct}%`}</p>
       </div>
 
-      <SkillSection title="Skills found in your profile" skills={matched} tone="good" empty="No explicit skill matches were found." />
-      <SkillSection title="Skills to strengthen" skills={missing} tone="warn" empty="No structured skill gaps detected." />
+      <WhyThisMatch job={job} />
 
-      {evidence.length > 0 && (
-        <div>
-          <p className="text-xs uppercase tracking-wider text-muted mb-2">Evidence from your CV</p>
-          <div className="space-y-2">
-            {evidence.map(item => (
-              <blockquote key={item.name} className="rounded-xl border border-line bg-surface-2/40 p-3 text-xs text-muted leading-relaxed">
-                <span className="text-emerald-500 font-medium">{item.name}: </span>{item.evidence}
-              </blockquote>
-            ))}
-          </div>
-        </div>
-      )}
+      {hasJobSkills && <p className="text-xs text-muted">Compared with skills mentioned in this job posting. Skills to strengthen are those not found in your CV or acquired roadmap skills; some may be optional.</p>}
+      <SkillSection title="Skills found in your profile" skills={matched} tone="good" empty={hasJobSkills ? 'None of the detected job skills were found in your profile yet.' : 'This posting does not provide enough detail to compare skills.'} />
+      <SkillSection title="Skills to strengthen" skills={missing} tone="warn" empty={hasJobSkills ? 'Your profile covers all skills detected in this posting.' : 'Skill gaps cannot be assessed from the available job information.'} />
 
-      {job.description && <p className="text-sm text-muted leading-relaxed line-clamp-5">{job.description}</p>}
+      {(job.description_text || job.description) && <p className="text-sm text-muted leading-relaxed line-clamp-5">{job.description_text || job.description}</p>}
       {job.benefits?.length > 0 && <p className="text-xs text-muted"><span className="font-semibold text-fg">Benefits:</span> {job.benefits.join(' · ')}</p>}
 
-      <div className="flex flex-wrap gap-2 pt-1">
+      <div className="grid grid-cols-2 gap-2 pt-1">
         <button onClick={() => navigate(resumeCoachPath(job))} className="btn-primary flex-1">Fit your CV →</button>
         <button onClick={() => navigate(`/roadmap?job_id=${encodeURIComponent(job.job_id)}`)} className="btn-ghost flex-1">Build roadmap →</button>
-        {job.apply_url && <a href={job.apply_url} target="_blank" rel="noopener noreferrer" className="btn-ghost w-full text-center">Apply</a>}
+        {applyUrl ? <a href={applyUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost text-center">Apply</a> : <button disabled className="btn-ghost opacity-50" title="No valid application link was provided">Apply unavailable</button>}
+        <button onClick={() => setDetailsOpen(true)} className="btn-ghost" aria-haspopup="dialog">Full job details</button>
       </div>
+      {detailsOpen && <JobDetailsDialog job={job} onClose={() => setDetailsOpen(false)} />}
     </aside>
   )
 }

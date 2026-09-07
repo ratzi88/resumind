@@ -16,7 +16,10 @@ from sentence_transformers import SentenceTransformer
 
 from scraper import scrape_file, get_file_extension
 from auth import hash_password, verify_password, create_token, get_current_user_id
-from matching import analyze_skills, compute_match_pct, parse_required_skills, normalize_skill_name, redact_pii
+from matching import analyze_skills, analyze_job_skills, compute_match_pct, normalize_skill_name, redact_pii, rank_job_matches, extract_job_skills
+from roadmap import resolve_role_progress, build_job_roadmap, apply_job_progress
+from learning_resources import with_learning_resources
+from job_explanations import explain_job_match, posting_plain_text
 
 load_dotenv()
 
@@ -94,6 +97,9 @@ def _chat(messages, *, max_tokens: Optional[int] = None):
             },
         )
         content = response.choices[0].message.content if response.choices else ""
+        # Some local templates include empty thinking tags even with thinking
+        # disabled. Remove those wrappers before downstream JSON parsing.
+        content = re.sub(r"<think>.*?</think>", "", content or "", flags=re.S | re.I).strip()
         if not content:
             raise ValueError("The model returned an empty response")
         return content
@@ -113,6 +119,23 @@ def get_db():
     return psycopg2.connect(database_url)
 
 
+def _load_role_progress(cur, user_id: int, role: str, resume_text: str) -> list[dict]:
+    cur.execute(
+        """
+        SELECT rs.skill_name, rs.category, rs.stage, rs.impact,
+               COALESCE(us.acquired, FALSE) AS acquired,
+               COALESCE(us.manual_override, FALSE) AS manual_override
+        FROM role_skills rs
+        LEFT JOIN user_skills us
+          ON us.skill_name = rs.skill_name AND us.user_id = %s AND us.role = rs.role
+        WHERE rs.role = %s
+        ORDER BY rs.stage, rs.impact DESC
+        """,
+        (user_id, role),
+    )
+    return resolve_role_progress(cur.fetchall(), resume_text)
+
+
 def _existing_job_columns(cur) -> set[str]:
     """Keep the API compatible with databases created before enrichment."""
 
@@ -121,6 +144,22 @@ def _existing_job_columns(cur) -> set[str]:
         "WHERE table_schema = current_schema() AND table_name = 'jobs'"
     )
     return {row["column_name"] for row in cur.fetchall()}
+
+
+def _load_matching_profile(cur, user_id: int) -> dict:
+    """Use identical CV/progress inputs for ranking and its explanation."""
+    cur.execute("SELECT resume_text, desired_role FROM user_profiles WHERE user_id = %s", (user_id,))
+    profile = cur.fetchone()
+    if not profile or not profile['resume_text']:
+        raise HTTPException(400, "No resume found. Complete onboarding first.")
+    role_skills = _load_role_progress(cur, user_id, profile['desired_role'], profile['resume_text'])
+    acquired = [row['skill_name'] for row in role_skills if row['acquired']]
+    cur.execute("SELECT DISTINCT skill_name FROM user_skills WHERE user_id = %s AND role LIKE 'job:%%' AND acquired = TRUE", (user_id,))
+    acquired = sorted(set(acquired) | {row['skill_name'] for row in cur.fetchall()})
+    career_text = redact_pii(profile['resume_text'])
+    if acquired:
+        career_text += '\nAcquired roadmap skills: ' + ', '.join(acquired)
+    return {'resume_text': profile['resume_text'], 'career_text': career_text}
 
 
 def _job_select_clause(columns: set[str]) -> str:
@@ -145,11 +184,8 @@ def _query_job_matches(
     industry: Optional[str] = None,
     min_salary: Optional[float] = None,
     max_salary: Optional[float] = None,
-    sort: str = "score",
-    page: int = 1,
-    limit: int = DEFAULT_JOB_LIMIT,
 ):
-    """Retrieve a pageable, filterable set of scored jobs."""
+    """Retrieve filtered candidates; full fit ranking precedes pagination."""
 
     if min_salary is not None and max_salary is not None and max_salary < min_salary:
         raise HTTPException(422, "Maximum salary must be greater than minimum salary.")
@@ -190,9 +226,7 @@ def _query_job_matches(
     if source_filter:
         source_filter = "\n        AND " + source_filter
 
-    safe_sort = "title ASC, raw_score DESC" if sort == "title" else "raw_score DESC"
-    offset = (page - 1) * limit
-    params.extend([threshold, limit, offset])
+    params.append(threshold)
     cur.execute(
         f"""
         WITH scored AS (
@@ -205,8 +239,7 @@ def _query_job_matches(
         SELECT scored.*, COUNT(*) OVER() AS total_count
         FROM scored
         WHERE raw_score >= %s
-        ORDER BY {safe_sort}
-        LIMIT %s OFFSET %s
+        ORDER BY raw_score DESC, job_id ASC
         """,
         params,
     )
@@ -220,16 +253,17 @@ def _format_job_rows(rows, resume_text: str) -> tuple[list[dict], int]:
         job = dict(row)
         raw_score = float(job.pop("raw_score") or 0)
         job.pop("total_count", None)
-        required = parse_required_skills(job.get("skills_desc"))
-        explanation = analyze_skills(resume_text, required)
+        explanation = analyze_job_skills(resume_text, job.get("skills_desc"), job.get("description"))
         job["semantic_similarity"] = round(max(0.0, min(1.0, raw_score)), 4)
         job["skill_coverage_pct"] = explanation["coverage_pct"]
         job["match_pct"] = compute_match_pct(
             raw_score,
             len(explanation["matched_skills"]),
-            len(required),
+            len(explanation["required_skills"]),
         )
         job["match_details"] = explanation
+        job["description_text"] = posting_plain_text(job.get("description"))
+        job["skills_text"] = posting_plain_text(job.get("skills_desc"))
         if isinstance(job.get("benefits"), str):
             job["benefits"] = [b.strip() for b in job["benefits"].split(";") if b.strip()]
         result.append(job)
@@ -354,11 +388,11 @@ def _build_suggest_context(
         ]
         sections.append("SPECIFIC JOB POSTING:\n" + "\n".join(line for line in job_lines if line))
 
-        required = parse_required_skills(job.get('skills_desc'))
-        if required:
-            job_analysis = analyze_skills(redacted_resume, required)
+        job_analysis = analyze_job_skills(redacted_resume, job.get('skills_desc'), job.get('description'))
+        if job_analysis['required_skills']:
             sections.append(
                 "JOB SKILL CHECK:\n"
+                "These are skills mentioned in the posting; some may be preferred or alternatives.\n"
                 f"Skills shown in resume: {', '.join(job_analysis['matched_skills']) or 'None'}\n"
                 f"Skills not found in resume: {', '.join(job_analysis['missing_skills']) or 'None'}"
             )
@@ -383,15 +417,10 @@ def _build_suggest_context(
             )
 
         if user_id:
-            cur.execute(
-                "SELECT skill_name FROM user_skills "
-                "WHERE user_id = %s AND role = %s AND acquired = TRUE "
-                "ORDER BY skill_name",
-                (user_id, role_slug),
-            )
-            acquired = [row['skill_name'] for row in cur.fetchall()]
+            progress = _load_role_progress(cur, user_id, role_slug, redacted_resume)
+            acquired = [row['skill_name'] for row in progress if row['acquired']]
             if acquired:
-                sections.append("SKILLS MARKED COMPLETE BY USER:\n" + ", ".join(acquired))
+                sections.append("ACQUIRED ROADMAP SKILLS (CV DETECTION OR SAVED PROGRESS):\n" + ", ".join(acquired))
 
     return "\n\n".join(sections)
 
@@ -471,8 +500,10 @@ def jobs(file: UploadFile = File(...)):
     cur = None
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        rows, _ = _query_job_matches(cur, cv_embedding, limit=10)
-        result, total = _format_job_rows(rows, resume_text)
+        rows, _ = _query_job_matches(cur, cv_embedding)
+        total = len(rows)
+        ranked = rank_job_matches(rows, resume_text, limit=10)
+        result, _ = _format_job_rows(ranked, resume_text)
         return {"jobs": result, "total": total, "score_method": "semantic + skill coverage"}
     finally:
         if cur:
@@ -712,7 +743,7 @@ def onboarding(
         raise HTTPException(503, "This role roadmap is not seeded yet.")
 
     # LLM detects acquired skills — gracefully falls back if LLM is unavailable
-    acquired = []
+    acquired = analyze_skills(redact_pii(resume_text), skill_names)['matched_skills']
     try:
         skills_list = "\n".join(f"- {s}" for s in skill_names[:150])
         raw = _chat([
@@ -723,9 +754,9 @@ def onboarding(
         raw = re.sub(r"\s*```$", "", raw)
         parsed = json.loads(raw)
         if isinstance(parsed, list):
-            acquired = parsed
+            acquired.extend(skill for skill in parsed if isinstance(skill, str))
     except Exception:
-        pass  # LLM unavailable — all skills start as not acquired; user toggles manually
+        pass  # CV evidence is still available when AI detection fails.
 
     # Models sometimes return aliases, different casing, or a short variant
     # of a canonical database skill. Keep only allowed canonical names.
@@ -743,12 +774,12 @@ def onboarding(
     psycopg2.extras.execute_values(
         cur,
         """
-        INSERT INTO user_skills (user_id, role, skill_name, acquired)
+        INSERT INTO user_skills (user_id, role, skill_name, acquired, manual_override)
         VALUES %s
         ON CONFLICT (user_id, role, skill_name) DO UPDATE
-          SET acquired = EXCLUDED.acquired, updated_at = NOW()
+          SET acquired = EXCLUDED.acquired, manual_override = FALSE, updated_at = NOW()
         """,
-        records,
+        [(*record, False) for record in records],
     )
     conn.commit()
     cur.close()
@@ -776,19 +807,9 @@ def get_user_roadmap(
             raise HTTPException(400, "No role set. Complete onboarding first.")
 
         role = profile["desired_role"]
-        cur.execute(
-            """
-            SELECT rs.skill_name, rs.category, rs.stage, rs.impact,
-                   COALESCE(us.acquired, FALSE) as acquired
-            FROM role_skills rs
-            LEFT JOIN user_skills us
-              ON us.skill_name = rs.skill_name AND us.user_id = %s AND us.role = rs.role
-            WHERE rs.role = %s
-            ORDER BY rs.stage, rs.impact DESC
-            """,
-            (user_id, role),
-        )
-        skills = [dict(r) for r in cur.fetchall()]
+        skills = _load_role_progress(cur, user_id, role, profile["resume_text"] or "")
+        if not skills and not job_id:
+            raise HTTPException(503, "This role roadmap is not seeded yet.")
 
         acquired_names = [s["skill_name"] for s in skills if s["acquired"]]
         career_text = redact_pii(profile["resume_text"] or "")
@@ -809,15 +830,22 @@ def get_user_roadmap(
             job = cur.fetchone()
             if not job:
                 raise HTTPException(404, "Job not found.")
-            required = parse_required_skills(job["skills_desc"])
-            job_match = analyze_skills(career_text, required)
+            job_match = analyze_job_skills(career_text, job["skills_desc"], job["description"])
+            cur.execute("SELECT skill_name, category, stage FROM role_skills")
+            catalog = cur.fetchall()
+            cur.execute(
+                "SELECT skill_name, acquired FROM user_skills WHERE user_id = %s AND role = %s",
+                (user_id, f"job:{job_id}"),
+            )
+            skills = build_job_roadmap(job_match, catalog, cur.fetchall())
+            job_match = apply_job_progress(job_match, skills)
             target_job = {
                 "job_id": job["job_id"],
                 "title": job["title"],
                 "company": job["company"],
                 "location": job["location"],
                 "description": (job["description"] or "")[:1200],
-                "required_skills": required,
+                "required_skills": job_match["required_skills"],
                 "experience_level": job["experience_level"],
                 "work_type": job["work_type"],
                 "remote": job["remote"],
@@ -833,10 +861,11 @@ def get_user_roadmap(
 
     return {
         "role": role,
-        "role_label": ROLE_DISPLAY.get(role, role),
+        "role_label": target_job["title"] if target_job else ROLE_DISPLAY.get(role, role),
+        "mode": "job" if target_job else "role",
         "score": score,
         "roadmap_score": score,
-        "skills": skills,
+        "skills": with_learning_resources(skills),
         "target_job": target_job,
         "job_match": job_match,
     }
@@ -846,6 +875,7 @@ def get_user_roadmap(
 def toggle_skill(
     skill_name: str = Form(...),
     acquired: bool = Form(...),
+    job_id: Optional[str] = Form(default=None, max_length=120),
     user_id: int = Depends(get_current_user_id),
 ):
     conn = get_db()
@@ -855,20 +885,30 @@ def toggle_skill(
         profile = cur.fetchone()
         if not profile or not profile["desired_role"]:
             raise HTTPException(400, "Profile not found.")
-        cur.execute(
-            "SELECT 1 FROM role_skills WHERE role = %s AND skill_name = %s",
-            (profile["desired_role"], skill_name),
-        )
-        if not cur.fetchone():
-            raise HTTPException(404, "Skill is not part of your roadmap.")
+        progress_role = profile["desired_role"]
+        if job_id:
+            cur.execute("SELECT skills_desc, description FROM jobs WHERE job_id = %s", (job_id,))
+            job = cur.fetchone()
+            if not job:
+                raise HTTPException(404, "Job not found.")
+            if skill_name not in extract_job_skills(job["skills_desc"], job["description"])["required_skills"]:
+                raise HTTPException(404, "Skill is not part of this job's roadmap.")
+            progress_role = f"job:{job_id}"
+        else:
+            cur.execute(
+                "SELECT 1 FROM role_skills WHERE role = %s AND skill_name = %s",
+                (progress_role, skill_name),
+            )
+            if not cur.fetchone():
+                raise HTTPException(404, "Skill is not part of your roadmap.")
         cur.execute(
             """
-            INSERT INTO user_skills (user_id, role, skill_name, acquired)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO user_skills (user_id, role, skill_name, acquired, manual_override)
+            VALUES (%s, %s, %s, %s, TRUE)
             ON CONFLICT (user_id, role, skill_name) DO UPDATE
-              SET acquired = EXCLUDED.acquired, updated_at = NOW()
+              SET acquired = EXCLUDED.acquired, manual_override = TRUE, updated_at = NOW()
             """,
-            (user_id, profile["desired_role"], skill_name, acquired),
+            (user_id, progress_role, skill_name, acquired),
         )
         conn.commit()
         return {"ok": True}
@@ -897,25 +937,8 @@ def get_user_jobs(
     cur = None
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            "SELECT resume_text, desired_role FROM user_profiles WHERE user_id = %s",
-            (user_id,),
-        )
-        profile = cur.fetchone()
-        if not profile or not profile["resume_text"]:
-            raise HTTPException(400, "No resume found. Complete onboarding first.")
-
-        # Roadmap progress becomes useful immediately: acquired skills are
-        # added to the matching profile without overwriting the original CV.
-        cur.execute(
-            "SELECT skill_name FROM user_skills "
-            "WHERE user_id = %s AND role = %s AND acquired = TRUE",
-            (user_id, profile["desired_role"]),
-        )
-        acquired = [row["skill_name"] for row in cur.fetchall()]
-        career_text = redact_pii(profile["resume_text"])
-        if acquired:
-            career_text += "\nAcquired roadmap skills: " + ", ".join(acquired)
+        profile = _load_matching_profile(cur, user_id)
+        career_text = profile['career_text']
 
         embedder = get_embedder()
         cv_embedding = embedder.encode(career_text, normalize_embeddings=True).tolist()
@@ -929,11 +952,10 @@ def get_user_jobs(
             industry=industry,
             min_salary=min_salary,
             max_salary=max_salary,
-            sort=sort,
-            page=page,
-            limit=limit,
         )
-        result, total = _format_job_rows(rows, career_text)
+        total = len(rows)
+        ranked = rank_job_matches(rows, career_text, sort=sort, page=page, limit=limit)
+        result, _ = _format_job_rows(ranked, career_text)
         return {
             "jobs": result,
             "total": total,
@@ -946,6 +968,34 @@ def get_user_jobs(
         if cur:
             cur.close()
         conn.close()
+
+
+@app.get('/api/user/jobs/{job_id}/explanation')
+def get_job_explanation(job_id: str, user_id: int = Depends(get_current_user_id)):
+    if not job_id or len(job_id) > 120:
+        raise HTTPException(400, 'Invalid job ID.')
+    conn = get_db()
+    cur = None
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        profile = _load_matching_profile(cur, user_id)
+        cur.execute('SELECT job_id, title, description, skills_desc, embedding IS NOT NULL AS has_embedding FROM jobs WHERE job_id = %s', (job_id,))
+        job = cur.fetchone()
+        if not job:
+            raise HTTPException(404, 'Job not found.')
+        if not job['has_embedding']:
+            raise HTTPException(422, 'This job does not have a semantic embedding yet.')
+        embedder = get_embedder()
+        embedding = embedder.encode(profile['career_text'], normalize_embeddings=True).tolist()
+        cur.execute('SELECT 1 - (embedding <=> %s::vector) AS raw_score FROM jobs WHERE job_id = %s', (embedding, job_id))
+        raw_score = cur.fetchone()['raw_score']
+    finally:
+        if cur:
+            cur.close()
+        conn.close()
+    result = explain_job_match(job, profile['resume_text'], profile['career_text'], raw_score, embedder)
+    result['embedding_model'] = EMBEDDING_MODEL
+    return result
 
 
 # ── Production frontend ──────────────────────────────────────────────────────

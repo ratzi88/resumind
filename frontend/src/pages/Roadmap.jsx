@@ -1,5 +1,5 @@
-import { useEffect, useState, useMemo } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useState, useMemo, useRef } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from './shared.jsx'
 import { useAuth } from '../lib/AuthContext.jsx'
 
@@ -17,6 +17,20 @@ function stageIsUnlocked(stage, byStage) {
   return prev.filter(s => s.acquired).length / prev.length >= 0.5
 }
 
+async function readResponse(response) {
+  const text = await response.text()
+  let data
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error('The server returned an unexpected response. Please try again.')
+  }
+  if (!response.ok) {
+    throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not update your roadmap. Please try again.')
+  }
+  return data
+}
+
 export default function Roadmap() {
   const { token } = useAuth()
   const [searchParams] = useSearchParams()
@@ -25,20 +39,34 @@ export default function Roadmap() {
   const [skills,  setSkills]  = useState([])
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState(null)
+  const [saveError, setSaveError] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [reload, setReload] = useState(0)
+  const saveController = useRef(null)
+  const roadmapUrl = `/api/user/roadmap${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''}`
 
   useEffect(() => {
     if (!token) return
-    const query = jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''
-    fetch(`/api/user/roadmap${query}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json().then(d => ({ ok: r.ok, d })))
-      .then(({ ok, d }) => {
-        if (!ok) throw new Error(d.detail || 'Could not load roadmap.')
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+    setSaveError(null)
+    setSaving(false)
+    fetch(roadmapUrl, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal })
+      .then(readResponse)
+      .then(d => {
+        if (controller.signal.aborted) return
         setData(d)
         setSkills(d.skills)
       })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [token, jobId])
+      .catch(e => { if (!controller.signal.aborted) setError(e.message) })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => {
+      controller.abort()
+      saveController.current?.abort()
+      saveController.current = null
+    }
+  }, [token, roadmapUrl, reload])
 
   const { score, acquired, byStage, nextSkills } = useMemo(() => {
     const total   = skills.reduce((s, x) => s + x.impact, 0)
@@ -66,28 +94,44 @@ export default function Roadmap() {
   }, [skills])
 
   const toggle = async (skillName, currentAcquired) => {
+    if (saveController.current) return
+    const controller = new AbortController()
+    saveController.current = controller
+    setSaving(true)
+    setSaveError(null)
     const next = !currentAcquired
+    let saved = false
     setSkills(prev => prev.map(s => s.skill_name === skillName ? { ...s, acquired: next } : s))
     try {
       const body = new URLSearchParams({ skill_name: skillName, acquired: String(next) })
+      if (jobId) body.set('job_id', jobId)
       const res = await fetch('/api/user/skills/toggle', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
         body,
+        signal: controller.signal,
       })
-      if (!res.ok) throw new Error('Could not save skill progress.')
-      if (jobId) {
-        const refreshed = await fetch(`/api/user/roadmap?job_id=${encodeURIComponent(jobId)}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (refreshed.ok) {
-          const nextData = await refreshed.json()
-          setData(nextData)
-          setSkills(nextData.skills)
-        }
+      await readResponse(res)
+      saved = true
+      const refreshed = await fetch(roadmapUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      })
+      const nextData = await readResponse(refreshed)
+      if (!controller.signal.aborted) {
+        setData(nextData)
+        setSkills(nextData.skills)
       }
-    } catch {
-      setSkills(prev => prev.map(s => s.skill_name === skillName ? { ...s, acquired: currentAcquired } : s))
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        if (!saved) setSkills(prev => prev.map(s => s.skill_name === skillName ? { ...s, acquired: currentAcquired } : s))
+        setSaveError(saved ? 'Progress saved, but the roadmap could not refresh. Please reload it.' : e.message)
+      }
+    } finally {
+      if (saveController.current === controller) {
+        saveController.current = null
+        setSaving(false)
+      }
     }
   }
 
@@ -102,8 +146,9 @@ export default function Roadmap() {
 
   if (error) return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-24 text-center space-y-4">
-      <p className="text-red-400">{error}</p>
-      <a href="/onboarding" className="btn-primary inline-block">Complete onboarding first</a>
+      <p role="alert" className="text-red-400">{error}</p>
+      <button className="btn-primary" onClick={() => setReload(value => value + 1)}>Retry loading roadmap</button>
+      <p><Link to="/onboarding" className="text-brand-500 underline">Update your resume or target role</Link></p>
     </div>
   )
 
@@ -116,17 +161,28 @@ export default function Roadmap() {
         title={data.role_label}
         subtitle={data.target_job
           ? `A focused plan for ${data.target_job.title}${data.target_job.company ? ` at ${data.target_job.company}` : ''}.`
-          : 'Work through each stage in order — stages unlock as you progress.'}
+          : 'Follow the suggested stages, and mark any skills you already know.'}
       />
 
-      {data.target_job && <TargetJobPanel job={data.target_job} match={data.job_match} />}
+      {data.target_job && <>
+        <Link to="/roadmap" className="mt-4 inline-block text-sm text-brand-500 underline">Back to my role roadmap</Link>
+        <TargetJobPanel job={data.target_job} match={data.job_match} />
+      </>}
 
-      <div className="mt-8 grid lg:grid-cols-4 gap-6 items-start">
-        <div className="lg:col-span-3 space-y-4">
+      <p className="mt-5 text-sm text-muted">Open <span className="font-medium text-fg">Learn</span> under a skill you haven't learned yet for learning paths and guides. Marking it as learned hides its resources; unchecking it shows them again.</p>
+
+      {saveError && <div role="alert" className="mt-6 rounded-xl border border-red-400/30 bg-red-500/5 p-4 text-sm text-red-400">
+        {saveError} <button className="underline" onClick={() => setReload(value => value + 1)}>Reload roadmap</button>
+      </div>}
+      {saving && <p role="status" className="mt-4 text-sm text-muted">Saving skill progress…</p>}
+      {!skills.length && <p className="mt-8 card text-muted">This posting does not contain enough recognizable skills to build a learning plan. Try another job or return to your role roadmap.</p>}
+
+      {skills.length > 0 && <div className="mt-8 grid lg:grid-cols-4 gap-6 items-start">
+        <div className="lg:col-span-3 min-w-0 space-y-4">
           {nextSkills.length > 0 && (
-            <NextUpBanner skills={nextSkills} onToggle={toggle} />
+            <NextUpBanner skills={nextSkills} onToggle={toggle} saving={saving} />
           )}
-          <StageMap byStage={byStage} onToggle={toggle} />
+          <StageMap byStage={byStage} onToggle={toggle} saving={saving} />
         </div>
 
       <ProgressPanel
@@ -136,12 +192,12 @@ export default function Roadmap() {
           roleLabel={data.role_label}
           byStage={byStage}
         />
-      </div>
+      </div>}
     </section>
   )
 }
 
-function NextUpBanner({ skills, onToggle }) {
+function NextUpBanner({ skills, onToggle, saving }) {
   return (
     <div className="card border-brand-400/20 bg-brand-500/5">
       <p className="text-xs uppercase tracking-wider text-brand-400 mb-3">Learn next</p>
@@ -149,6 +205,8 @@ function NextUpBanner({ skills, onToggle }) {
         {skills.map(s => (
           <button
             key={s.skill_name}
+            disabled={saving}
+            title={`Mark ${s.skill_name} as learned`}
             onClick={() => onToggle(s.skill_name, s.acquired)}
             className="chip border-brand-400/30 text-brand-500 dark:text-brand-200 hover:bg-brand-500/15 cursor-pointer transition"
           >
@@ -160,7 +218,7 @@ function NextUpBanner({ skills, onToggle }) {
   )
 }
 
-function StageMap({ byStage, onToggle }) {
+function StageMap({ byStage, onToggle, saving }) {
   return (
     <div className="overflow-x-auto pb-2 -mx-1 px-1">
       <div className="flex items-start gap-2 min-w-max">
@@ -178,6 +236,7 @@ function StageMap({ byStage, onToggle }) {
                 unlocked={unlocked}
                 acquiredCount={acquiredCount}
                 onToggle={onToggle}
+                saving={saving}
               />
               {i < 3 && (
                 <div className={`pt-[3.8rem] shrink-0 ${nextUnlocked ? 'text-brand-400' : 'text-line'}`}>
@@ -194,7 +253,7 @@ function StageMap({ byStage, onToggle }) {
   )
 }
 
-function StageColumn({ stage, label, skills, unlocked, acquiredCount, onToggle }) {
+function StageColumn({ stage, label, skills, unlocked, acquiredCount, onToggle, saving }) {
   const total  = skills.length
   const pct    = total ? Math.round((acquiredCount / total) * 100) : 0
   const allDone = total > 0 && acquiredCount === total
@@ -229,7 +288,7 @@ function StageColumn({ stage, label, skills, unlocked, acquiredCount, onToggle }
       {/* Skills */}
       <ul className="p-3 space-y-1.5">
         {skills.map(s => (
-          <SkillNode key={s.skill_name} skill={s} unlocked={unlocked} onToggle={onToggle} />
+          <SkillNode key={s.skill_name} skill={s} unlocked={unlocked} onToggle={onToggle} saving={saving} />
         ))}
         {!skills.length && (
           <li className="py-4 text-center text-xs text-subtle">—</li>
@@ -239,21 +298,21 @@ function StageColumn({ stage, label, skills, unlocked, acquiredCount, onToggle }
   )
 }
 
-function SkillNode({ skill, unlocked, onToggle }) {
+function SkillNode({ skill, unlocked, onToggle, saving }) {
   const { skill_name, acquired, impact } = skill
-  const disabled = !unlocked && !acquired
   return (
     <li>
       <button
-        disabled={disabled}
+        disabled={saving}
+        aria-pressed={acquired}
         onClick={() => onToggle(skill_name, acquired)}
-        title={disabled ? 'Complete at least half of the previous stage first' : acquired ? 'Click to unmark' : 'Click to mark as learned'}
+        title={acquired ? `Unmark ${skill_name}` : `Mark ${skill_name} as learned`}
         className={`w-full text-left flex items-center gap-2 px-2.5 py-2 rounded-xl border text-xs font-medium transition group ${
           acquired
             ? 'bg-emerald-500/10 border-emerald-400/30 text-emerald-600 dark:text-emerald-300 hover:bg-emerald-500/15'
             : unlocked
             ? 'bg-surface-2/60 border-line text-fg hover:border-brand-400/50 hover:bg-brand-500/5'
-            : 'bg-transparent border-line/20 text-muted/50 cursor-not-allowed'
+            : 'bg-transparent border-line/30 text-muted hover:border-brand-400/50 hover:bg-brand-500/5'
         }`}
       >
         <span className={`shrink-0 h-4 w-4 grid place-items-center rounded-full border text-[9px] font-bold transition ${
@@ -263,12 +322,52 @@ function SkillNode({ skill, unlocked, onToggle }) {
         }`}>
           {acquired ? '✓' : ''}
         </span>
-        <span className="flex-1 truncate leading-tight">{skill_name}</span>
+        <span className="flex-1 break-words min-w-0 leading-tight">{skill_name}</span>
         <span className={`shrink-0 text-[9px] tabular-nums ${acquired ? 'text-emerald-500/70' : 'text-muted/40'}`}>
           +{impact}
         </span>
       </button>
+      {!acquired && <SkillResources skill={skill} />}
     </li>
+  )
+}
+
+function SkillResources({ skill }) {
+  // Links come from a maintained server-side catalog, not model output. Keep
+  // the browser guard too, so malformed responses never create executable URLs.
+  const resources = (skill.learning_resources || []).filter(resource => {
+    try {
+      const url = new URL(resource.url)
+      return url.protocol === 'https:' && !url.username && !url.password
+    } catch {
+      return false
+    }
+  })
+  if (!resources.length) return null
+  return (
+    <details className="mt-1 mb-3 rounded-xl border border-line/50 bg-surface-2/30 p-2 group/resources">
+      <summary
+        aria-label={`Learning resources for ${skill.skill_name}`}
+        className="cursor-pointer text-xs font-medium text-brand-500 dark:text-brand-200 rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-400"
+      >
+        Learn <span className="text-muted font-normal">· {resources.length} resource{resources.length === 1 ? '' : 's'}</span>
+      </summary>
+      <ul className="mt-2 space-y-2">
+        {resources.map(resource => (
+          <li key={resource.url}>
+            <a href={resource.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer"
+              className="block rounded-lg border border-line/60 p-2 hover:border-brand-400/50 hover:bg-brand-500/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-400"
+              aria-label={`${resource.title} for ${skill.skill_name} (opens in a new tab)`}
+            >
+              <span className="block text-[10px] uppercase tracking-wide text-muted">{resource.kind}</span>
+              <span className="mt-0.5 block text-xs leading-snug text-fg break-words">{resource.title} <span aria-hidden="true">↗</span></span>
+              <span className="mt-1 block text-[10px] text-muted break-all">{resource.source}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+      {resources.every(resource => resource.kind === 'Search') && <p className="mt-2 text-[10px] text-muted">No curated guide yet. These links search the web for this skill.</p>}
+    </details>
   )
 }
 
@@ -342,7 +441,7 @@ function ProgressPanel({ score, acquiredCount, total, roleLabel, byStage }) {
       </div>
 
       <p className="text-xs text-muted leading-relaxed">
-        Stages unlock at 50% completion. Complete the current stage before moving forward.
+        Stages suggest a learning order. You can mark skills you already know in any stage; your choices are saved automatically.
       </p>
     </aside>
   )
@@ -351,6 +450,7 @@ function ProgressPanel({ score, acquiredCount, total, roleLabel, byStage }) {
 function TargetJobPanel({ job, match }) {
   const matched = match?.matched_skills || []
   const missing = match?.missing_skills || []
+  const hasJobSkills = matched.length + missing.length > 0
   return (
     <div className="mt-8 card border-brand-400/20 bg-brand-500/5">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
@@ -367,9 +467,10 @@ function TargetJobPanel({ job, match }) {
         )}
       </div>
       <div className="mt-5 grid md:grid-cols-2 gap-4">
-        <SkillList title="Already covered" values={matched} tone="good" empty="No explicit matches yet." />
-        <SkillList title="Prioritize next" values={missing} tone="warn" empty="No structured gaps detected." />
+        <SkillList title="Already covered" values={matched} tone="good" empty={hasJobSkills ? 'None of the detected job skills were found in your profile yet.' : 'This posting does not provide enough detail to compare skills.'} />
+        <SkillList title="Prioritize next" values={missing} tone="warn" empty={hasJobSkills ? 'Your profile covers all skills detected in this posting.' : 'Skill gaps cannot be assessed from the available job information.'} />
       </div>
+      {hasJobSkills && <p className="mt-3 text-xs text-muted">Based on skills mentioned in this job posting. Some may be preferred or optional.</p>}
     </div>
   )
 }

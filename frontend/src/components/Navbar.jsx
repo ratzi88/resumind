@@ -104,15 +104,20 @@ export default function Navbar() {
               {accountOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full mt-2 w-56 overflow-hidden rounded-xl border border-line bg-bg shadow-xl"
+                  className="absolute right-0 top-full mt-2 w-64 overflow-hidden rounded-xl border border-line bg-bg shadow-xl"
                 >
+                  <div className="border-b border-line px-4 py-3">
+                    <p className="text-xs text-muted">Signed in as</p>
+                    <p className="mt-1 truncate text-sm font-medium text-fg">{user.email}</p>
+                  </div>
                   <button
                     type="button"
                     role="menuitem"
                     onClick={restartOnboarding}
-                    className="w-full px-4 py-3 text-left text-sm text-fg hover:bg-surface-2 transition"
+                    className="w-full px-4 py-3 text-left hover:bg-surface-2 transition"
                   >
-                    Upload a new resume
+                    <span className="block text-sm font-medium text-fg">Redo onboarding</span>
+                    <span className="mt-0.5 block text-xs text-muted">Replace your CV and choose a new role</span>
                   </button>
                   <div className="border-t border-line" />
                   <button
@@ -178,9 +183,10 @@ export default function Navbar() {
                 <Link
                   to="/onboarding"
                   onClick={() => setOpen(false)}
-                  className="px-3 py-2 rounded-lg text-sm font-medium text-muted hover:text-fg hover:bg-surface-2/60"
+                  className="px-3 py-2 rounded-lg hover:bg-surface-2/60"
                 >
-                  Upload a new resume
+                  <span className="block text-sm font-medium text-fg">Redo onboarding</span>
+                  <span className="mt-0.5 block text-xs text-muted">Replace your CV and choose a new role</span>
                 </Link>
                 <button
                   onClick={() => { handleLogout(); setOpen(false) }}

@@ -41,7 +41,7 @@ ResuMind/
 |------|-------------|
 | **1 – Resume** | Upload a PDF/DOCX **or** build one via a 6-step form → YAML → PDF; generated resumes can be saved to the profile |
 | **2 – Jobs** | Searchable semantic matching with skill coverage, CV evidence, salary, remote, work-type, and experience filters |
-| **3 – Roadmap** | Role roadmap plus selected-job gap analysis; acquired skills influence future job matching |
+| **3 – Roadmap** | Role and job-specific learning plans, with CV-detected skills and saved manual progress; acquired skills influence future job matching |
 
 ---
 
@@ -81,7 +81,88 @@ pip install -r requirements.txt
 psql "$DATABASE_URL" -f schema.sql
 ```
 
-**Environment variables** — create `backend/.env`:
+For an existing installation, apply this small migration before starting the
+updated backend (run from `backend`, with `DATABASE_URL` exported):
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/20260907_roadmap_manual_override.sql
+```
+
+It adds a flag so explicit skill check/uncheck choices take precedence over CV
+detection. Existing post-onboarding skill updates are preserved as manual choices.
+The migration is idempotent and does not delete profiles or progress.
+
+Jobs default to **Highest fit first**: all candidates passing the semantic
+threshold and filters are ranked by the displayed score before pagination
+(75% semantic similarity + 25% detected skill coverage). Title A–Z remains available.
+
+### Match explanations and full job details
+
+On the Jobs page, select a posting and expand **Why this match?** to see:
+
+- The actual semantic and skill-coverage contributions to its estimated fit.
+  With no detected posting skills, the score uses semantic similarity alone.
+- Up to three related CV/job excerpt pairs, compared separately with the same
+  embedding model. These are supporting examples, **not** causal model reasoning
+  or contributions that add up to the whole-document semantic score.
+- Evidence distinguishing CV mentions from skills acquired in the roadmap, plus
+  practical CV suggestions that do not assume missing skills are already learned.
+
+The token-count warning is not shown in the UI. As an implementation detail, the
+current `all-MiniLM-L6-v2` configuration still reads at most 256 tokens for a single
+embedding; skill coverage checks the full profile. Excerpts are sampled across
+the full saved text (up to 32 per document, 320 characters each).
+
+Explanations load on demand from authenticated
+`GET /api/user/jobs/{job_id}/explanation`, using the same saved CV and acquired
+skills as job ranking. This does not change scoring, embeddings stored in the
+database, or job ordering. Contact emails/phone numbers are redacted before
+excerpt comparison; there is no LLM call, shared profile cache, or database write.
+
+**Full job details**, next to **Apply**, opens a keyboard-accessible dialog with
+the full saved description, supplied requirements, detected skills, benefits,
+and available location, salary, experience, company and posting-date metadata.
+HTML is displayed as plain text and application links allow only HTTP/HTTPS.
+The view cannot restore text omitted during ingestion: the current importer caps
+stored descriptions at 4,000 characters and builds job embeddings from the title,
+the first 1,000 description characters and supplied skills. Always check the
+original listing for complete, current information.
+
+### Roadmap learning resources
+
+Expand **Learn** below an unlearned skill on a role or job-specific roadmap. It contains
+up to three links: a relevant [roadmap.sh learning path](https://roadmap.sh/roadmaps/)
+and/or primary-source tutorials and documentation, such as
+[Docker getting started](https://docs.docker.com/get-started/) and the
+[Python tutorial](https://docs.python.org/3/tutorial/).
+
+- Links open in a new tab; opening them never marks a skill as learned.
+- Marking a skill as learned hides its Learn section; unchecking it shows the
+  section again. This also applies when loading previously saved progress.
+- `backend/learning_resources.py` maintains exact skill/alias mappings. All 159
+  unique skills currently stored in role roadmaps and all 184 skills in the job
+  extraction vocabulary have a curated resource. Unknown future skill names
+  receive clearly labelled searches, not fabricated documentation URLs.
+- The authenticated roadmap API attaches `learning_resources` to each skill.
+  No schema migration, AI call or web fetch is needed to display them.
+- Guides are starting points, not endorsements of paid courses. External sites
+  may require an account or charge for optional labs, products or cloud usage.
+- Resume text, account details and job descriptions are not included in links.
+  Search fallbacks contain only the skill label, and links suppress referrers.
+
+To check the static catalog for moved or broken links, run from the project root:
+
+```bash
+python backend/check_learning_resources.py
+```
+
+The checker reports redirects/status issues without changing the catalog.
+Some providers block automated requests (403); verify those in a browser before
+removing a resource. Unit tests do not depend on external website availability.
+
+### Backend environment variables
+
+Create `backend/.env`:
 
 ```env
 # Local OpenAI-compatible inference endpoint
@@ -163,4 +244,8 @@ cd frontend && npm run build
 cd ../backend && python -m unittest discover -s tests -v
 ```
 
-The matching helper tests cover aliases, required-skill parsing, evidence, bounded scoring, and contact-PII redaction. The full end-to-end flow still requires a configured PostgreSQL/PGVector database and inference endpoint.
+The 46 deterministic backend tests cover matching/ranking, roadmap progress,
+learning resources, score explanations, real excerpt evidence, HTML-to-text
+display, bounded inference work, token-window diagnostics and contact-PII redaction.
+The full end-to-end flow still requires a configured PostgreSQL/PGVector database
+and inference endpoint.

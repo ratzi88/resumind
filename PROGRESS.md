@@ -1,6 +1,6 @@
 # ResuMind Project Progress
 
-Last updated: 2026-09-06
+Last updated: 2026-09-07
 
 ## Project overview
 
@@ -96,6 +96,138 @@ The container is healthy and its database connection to PostgreSQL/PGVector at
 `192.168.1.77:5432` has been verified. The application image does not contain
 llama.cpp, Ollama, LiteLLM, or PostgreSQL; those services remain external.
 
+### Match explanations and full job details (2026-09-07)
+
+- Added an on-demand **Why this match?** panel to the selected job: actual
+  semantic/coverage score contributions, up to three related CV/posting excerpt
+  pairs, CV-versus-roadmap skill evidence, and grounded improvement suggestions.
+- The new authenticated `GET /api/user/jobs/{job_id}/explanation` endpoint shares
+  the exact matching-profile loader with job ranking. It uses local Sentence-BERT
+  inference, not llama.cpp or an external proxy, and does not write user data.
+- Excerpt comparisons are labelled as separate illustrative similarities, not
+  causal model reasoning or additive parts of the overall semantic score.
+  Work is bounded to 32 excerpts per document, each at most 320 characters.
+- Added an input-window notice: the bundled model embeds at most 256 tokens of
+  a matching profile. Explicit skill coverage still checks the full profile.
+  Contact emails and phone numbers are redacted before excerpt comparison.
+- Subsequently removed the token-count warning at the user's request, including
+  its duplicate under **How this explanation works**. Internal token diagnostics,
+  the embedding input limit and all scoring behavior remain unchanged.
+  This update is deployed; all 46 backend tests and the browser checks passed.
+  Live API checks confirm the warning is absent. The prior container is retained
+  as `resumind-before-remove-token-warning-20260907` for rollback.
+- Added **Full job details** beside **Apply**, with all saved description and
+  requirements text, benefits and available posting/company/salary metadata.
+  Imported HTML is converted to plain text; application links accept only
+  HTTP/HTTPS. The dialog supports Escape, backdrop dismissal, focus restoration,
+  background-scroll locking and mobile scrolling.
+- The UI explains the ingestion limit: saved descriptions may stop at 4,000
+  characters; source listings can change or close. Opening details does not fetch
+  the original website or silently claim the saved record is complete/current.
+- Verification: 46 deterministic backend tests, frontend production build and
+  Docker build passed. Chrome checks passed in production and React StrictMode,
+  covering on-demand loading, retry after HTML errors, request cancellation when
+  changing jobs, safe/missing links, full text, keyboard controls and mobile layout.
+  Existing job-to-roadmap navigation and Learn-visibility regression checks passed.
+- Read-only candidate checks against the existing database covered three profiles
+  and four explanations. Existing job responses (excluding new display-text fields),
+  scores and order matched the prior deployment exactly. Warm explanation requests
+  took approximately 0.18–0.54 seconds in these checks; these are smoke-test timings,
+  not a load benchmark. Authentication and missing-profile/job/embedding errors
+  were checked without changing resumes or progress.
+- Deployed the updated image to `http://192.168.1.99:8000`. The container is
+  healthy, and live authenticated explanation checks passed for the same three
+  profiles (approximately 0.35–0.40 seconds per explanation). The deployed frontend
+  also passed the mocked-API browser suite. The previous container is retained as
+  `resumind-before-match-explanation-20260907` for rollback. No Git commit or push
+  was made.
+
+### Job skill comparison fix (2026-09-07)
+
+- Only 523 of the 33,040 stored jobs have a nonempty `skills_desc` field. Jobs,
+  job-specific Roadmap panels and the resume coach now also extract named skills
+  from the job description using a shared technology vocabulary and aliases.
+- Existing explicit skills are merged with description mentions and deduplicated.
+  This runs at request time and does not require re-ingestion or an LLM call.
+- Matched and missing skills, profile evidence and skill coverage use the same
+  extracted list. Skill coverage can therefore affect estimated-fit scores for
+  jobs that previously had no skills information available to the comparison.
+- Empty panels distinguish unavailable job information from full coverage.
+  Description mentions may include preferred skills or alternatives; they are
+  not a complete, validated list of mandatory requirements.
+- Fourteen helper tests cover extraction, real job prose, aliases, HTML, text
+  boundaries, acquired roadmap skills, missing data and the existing scoring rules.
+- Deployed to `192.168.1.99:8000` and verified the served frontend and authenticated
+  APIs. All ten returned jobs for a test profile had populated skill comparisons;
+  the previously empty Java posting produced 28 detected skills. The prior
+  container is stopped as `resumind-before-skill-fix-20260907` for rollback.
+
+### Fit ordering and roadmap fixes (2026-09-07)
+
+- Jobs now sort all eligible candidates by displayed fit before pagination,
+  with deterministic tie-breakers. Title sorting and filters remain available.
+  Shared job-skill extraction is cached; user-specific matching is not cached.
+- Role roadmaps recover explicitly detectable CV skills when onboarding AI
+  detection fails. Thinking wrappers are stripped before parsing AI output,
+  and onboarding retains deterministic CV evidence if the model is unavailable.
+- Added `user_skills.manual_override` and an idempotent migration to preserve
+  explicit check/uncheck choices. Legacy updates after onboarding are treated as
+  manual choices; older history cannot be identified perfectly from timestamps.
+- Build roadmap now creates a plan from the selected posting's detected skills,
+  rather than reusing the onboarding role. Known catalog skills supply suggested
+  stages; other detected skills start at Core Tools. Job skills have equal weight.
+- Job-specific progress is stored under `role = 'job:<job_id>'`; it does not
+  change the user's target role. Job coverage panels reflect saved learning.
+- Any stage's skills can be marked learned. Loading state resets on navigation,
+  stale requests are cancelled, saves are serialized, and failed saves display
+  an error with retry rather than silently reverting.
+- Verification: 26 helper tests, frontend/Docker builds, and browser interaction
+  checks (mocked APIs) pass. Candidate APIs were checked against the real database:
+  75 jobs stayed descending across three pages, and three selected jobs produced
+  different relevant plans (10, 13 and 28 skills). The affected role's nine CV
+  skills yield 67% weighted progress. Offline-model onboarding still detected
+  six skills from a synthetic CV. All integration-test writes were rolled back.
+- One candidate timing sample: the first request including model startup took
+  8.71 seconds; the next two pages took 0.12 and 0.13 seconds. These are smoke-test
+  timings, not a load test or recommendation-quality evaluation.
+- Deployed and verified on `192.168.1.99:8000`; the container is healthy. Live
+  authenticated checks confirmed descending fit across two pages, correct role
+  and selected-job plans, and the updated frontend bundle. The migration passed
+  repeated execution tests in an isolated schema that was rolled back.
+  Previous container: `resumind-before-roadmap-fix-20260907` (stopped, retained
+  for rollback). Changes remain uncommitted and have not been pushed to GitHub.
+
+### Roadmap learning resources (2026-09-07)
+
+- Added an expandable Learn section below every skill, for both role and
+  job-specific roadmaps. Reading a guide is separate from marking progress.
+- Added a maintained resource catalog covering all 159 unique stored role skills
+  and all 184 named skills recognized in job descriptions. Canonical aliases
+  share resources; each response contains up to three deduplicated links.
+- Sources include roadmap.sh paths and official guides from Python, Docker,
+  Kubernetes, HashiCorp, MDN, Google, Apple, OWASP and the relevant tool authors.
+  Unknown future labels receive explicitly labelled search links.
+- Reviewed 217 unique catalog URLs. Corrected moved Trivy, Splunk, Retrofit,
+  Cassandra, Confluence and Salesforce links. Some providers block automated
+  HTTP requests; their pages were reviewed through web sources instead.
+  Added an optional link-check script for future maintenance.
+- No new database fields or runtime web/AI calls. Resource URLs contain no
+  resume/account data, use HTTPS, and suppress referrers on navigation.
+- Thirty-four deterministic tests and the production frontend/Docker builds
+  pass. Browser checks with mocked APIs cover role/job resources, keyboard
+  expansion, new tabs, unchanged progress, search fallbacks, unsafe-URL rejection
+  and mobile layout; the earlier roadmap-interaction regression checks also pass.
+- Deployed to `192.168.1.99:8000` and verified authenticated responses for three
+  existing profiles on their role roadmap and two selected-job plans. Candidate
+  responses match the previous API exactly after removing the new resource field;
+  no saved profiles or progress were modified. The previous healthy container is
+  retained as `resumind-before-learning-resources-20260907`. Not committed/pushed.
+- Learn sections now hide for acquired skills and reappear when unchecked,
+  including previously saved/CV-detected progress. Browser tests cover both
+  roadmap modes, reloads and failed-save rollback; all 34 backend tests still pass.
+  Deployed and verified the updated frontend and health endpoint. Previous
+  container: `resumind-before-learn-visibility-20260907`; no database changes.
+
 ## Recommendation system
 
 The recommendation system uses NLP and a pretrained embedding model:
@@ -113,7 +245,12 @@ PGVector calculates cosine similarity with:
 1 - (embedding <=> resume_vector)
 ```
 
-The API removes results below `0.60`, orders the remaining jobs by similarity, and returns the top ten. Displayed scores are normalized into a 70–97 range and are therefore not literal cosine-similarity percentages.
+The API removes results below `0.60` cosine similarity and applies the requested
+filters. It ranks the remaining jobs by displayed fit: 75% semantic similarity
+plus 25% detected skill coverage. If no job skills can be identified, the score
+uses semantic similarity alone. Authenticated jobs are paginated (25 by default);
+the upload-based endpoint returns ten. Fit is a bounded product score, not a
+probability of hiring or a validated success rate.
 
 `all-MiniLM-L6-v2` was selected as a practical baseline because it is small, fast on CPU, works locally, and supports semantic matching better than simple keyword comparison. A future improvement would retrieve a larger candidate set and rerank it with a cross-encoder.
 
@@ -134,9 +271,16 @@ This is a small retrieval-augmented generation flow because retrieved job data g
 
 ### Authenticated roadmap UI
 
-`GET /api/user/roadmap` does not call the LLM when the page loads. It joins predefined `role_skills` with the user's `user_skills` and calculates progress from stored skill weights.
+`GET /api/user/roadmap` does not call the LLM when the page loads. It joins
+predefined `role_skills` with `user_skills`, uses explicit CV evidence unless
+manually overridden, and calculates progress from stored skill weights. With
+`job_id`, it builds a plan from that posting's detected skills and saved
+job-specific learning progress instead; coverage uses equal skill weights.
 
-During onboarding, the LLM receives the resume and the predefined skill list for the selected role. It identifies skills already present in the resume, and those results are stored for later use.
+During onboarding, deterministic CV detection is combined with allowed skills
+identified by the LLM. If the model fails or returns malformed output, the CV
+detection remains available. Explicit check/uncheck actions take precedence on
+later page loads; re-onboarding resets detection for the selected role.
 
 ## Data storage
 
@@ -151,7 +295,7 @@ Application tables referenced by the code:
 
 - `users`: email address and password hash.
 - `user_profiles`: extracted resume text, original filename, desired role, and onboarding status.
-- `user_skills`: acquired state for each user's role skills.
+- `user_skills`: acquired state and manual-override flag for role and job-specific skills.
 - `role_skills`: predefined skills, stages, categories, and weights for each role.
 - `jobs`: job details and vector embeddings.
 
